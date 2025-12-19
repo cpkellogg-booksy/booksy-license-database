@@ -1,36 +1,44 @@
-# Booksy License Database (ETL Pipeline)
+# Booksy License Database (ETL & Mapping Pipeline)
 
-This repository hosts a "headless" ETL (Extract, Transform, Load) pipeline that automatically aggregates professional license data. Currently, it pulls **Florida Cosmetology** licenses, cleans the data, and stores it in a **CockroachDB Serverless** database.
+This repository hosts a "headless" ETL (Extract, Transform, Load) pipeline that automatically aggregates professional license data. It pulls **Florida Cosmetology and Barber** licenses, cleans the addresses using AI, segments them into Commercial vs. Residential locations, and generates an interactive map file.
 
-The system is designed to be **free, open-source, and scalable** to handle additional states (e.g., Texas) and license types in the future.
+The system is designed to be **free, open-source, and scalable**, running entirely on GitHub Actions and CockroachDB Serverless.
 
 ## 🏗 Architecture
 
-* **Source:** [Florida DBPR CSV Extracts](https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv) (Updated periodically by the state).
+* **Sources:**
+    * [Florida DBPR Cosmetology Extract](https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv)
+    * [Florida DBPR Barber Extract](https://www2.myfloridalicense.com/sto/file_download/extracts/lic03bb.csv)
 * **Orchestration:** **GitHub Actions** (Runs automatically every day at 8:00 AM UTC).
-* **Processing:** **Python 3.9** (Pandas, SQLAlchemy).
+* **Processing:** **Python 3.9** (Pandas, SQLAlchemy, USAddress, Requests).
+* **Geocoding:** **US Census Bureau Batch API** (Free & High Volume).
 * **Storage:** **CockroachDB Serverless** (PostgreSQL-compatible).
 
 ## 🚀 Automation Flow
-1.  **Trigger:** GitHub Actions wakes up daily (defined in `.github/workflows/daily_refresh.yml`).
-2.  **Extract:** The `etl.py` script streams the CSV from the Florida government website.
-3.  **Transform:**
-    * Applies clean column headers (standardized snake_case).
-    * Fixes encoding (ISO-8859-1).
-    * Handles connection security (SSL/Certifi).
-4.  **Load:**
-    * **First Batch:** Replaces the existing table (`if_exists='replace'`) to ensure a fresh sync.
-    * **Subsequent Batches:** Appends data in chunks of 10,000 rows to manage memory.
 
-## 🛠 Setup & Installation
+The pipeline consists of two distinct stages that run sequentially:
 
-### 1. Prerequisites
-* A **CockroachDB Serverless** cluster.
-* A **GitHub Repository** (Private recommended).
+### Stage 1: The "Factory" (`etl.py`)
+1.  **Extract:** Downloads raw CSVs for both Cosmetology and Barbers from the state government.
+2.  **Transform:**
+    * **Universal Adapter:** Normalizes the Barber file (which has a shifted schema) to match the standard Cosmetology layout.
+    * **AI Cleaning:** Uses `usaddress` and custom Regex to fix "Ghost Data" (duplicate street names) and "Floating Suites."
+    * **Segmentation:** Classifies every location as **Commercial** (Salons, Suites, Malls) or **Residential** (Home-based) based on density and keywords.
+3.  **Load:** Merges all data into a single `address_insights_gold` table in CockroachDB.
 
-### 2. Environment Variables
-This project uses **GitHub Secrets** to protect database credentials.
-* Go to **Settings > Secrets and variables > Actions**.
+### Stage 2: The "Mapper" (`map_gen.py`)
+1.  **Fetch:** Reads the clean `address_insights_gold` data from the database.
+2.  **Geocode:** Sends addresses in batches of 5,000 to the **US Census Bureau Batch Geocoder** to retrieve Latitude/Longitude coordinates.
+3.  **Generate:** Outputs a `florida_beauty_map_complete.csv` file.
+4.  **Artifact:** Uploads the CSV to GitHub Actions as a downloadable zip file (ready for [Kepler.gl](https://kepler.gl)).
+
+## 🛠 Setup & Deployment
+
+### 1. Database Setup (CockroachDB)
+Create a free Serverless cluster at [cockroachlabs.com](https://cockroachlabs.com). Get your connection string.
+
+### 2. GitHub Secrets
+Go to **Settings > Secrets and variables > Actions**.
 * Add a secret named `DB_CONNECTION_STRING`.
 * **Value Format:** `postgresql://user:password@host:port/defaultdb...`
     * *Note: The script automatically converts this to `cockroachdb://` and attaches the correct SSL certificates at runtime.*
@@ -46,33 +54,42 @@ To run this script on your local machine:
 
 2.  Install dependencies:
     ```bash
-    pip install -r requirements.txt
+    pip install pandas sqlalchemy psycopg2-binary sqlalchemy-cockroachdb certifi usaddress requests
     ```
 
 3.  Set the environment variable and run:
     ```bash
+    # Mac/Linux
     export DB_CONNECTION_STRING="your_cockroach_db_string"
+    
+    # Windows
+    $env:DB_CONNECTION_STRING="your_cockroach_db_string"
+
+    # Run the ETL
     python etl.py
+    
+    # Run the Map Generator
+    python map_gen.py
     ```
 
-## 📊 Data Schema
-The current schema for the `florida_cosmetology` table includes:
+## 📊 Data Schema (`address_insights_gold`)
+
+The final output table aggregates licenses by physical location:
 
 | Column Name | Description |
 | :--- | :--- |
-| `licensee_name` | Name of the professional or business |
-| `license_number` | Unique ID (e.g., CL12345) |
-| `city` / `state` / `zip` | Location data |
-| `expiration_date` | License expiry date |
-| `primary_status` | Status (Current, Delinquent, Null and Void) |
-| *(and 17 other columns)* | |
+| `address_clean` | The AI-standardized street address |
+| `city_clean` | Standardized City |
+| `address_type` | **Commercial** or **Residential** |
+| `total_licenses` | Total active licenses at this location |
+| `count_barber` | Number of Barbers |
+| `count_cosmetologist` | Number of Cosmetologists |
+| `count_salon` | Number of Salon Licenses |
+| `count_barbershop` | Number of Barber Shop Licenses |
 
-## 🔎 Verification
-To check the data, log in to the CockroachDB SQL Shell and run:
-
-```sql
--- Check total records (should be ~300k+)
-SELECT count(*) FROM florida_cosmetology;
-
--- Preview data
-SELECT licensee_name, city, expiration_date FROM florida_cosmetology LIMIT 5;
+## 🗺 Visualization
+To visualize the data:
+1. Go to the **Actions** tab in this repository.
+2. Click on the latest **Daily Data Refresh** run.
+3. Scroll down to **Artifacts** and download `florida-beauty-map`.
+4. Drag and drop the CSV into [Kepler.gl](https://kepler.gl/demo).
