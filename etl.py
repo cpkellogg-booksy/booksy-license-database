@@ -16,6 +16,7 @@ else:
 
 csv_url = "https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv"
 
+# Note: The column we call 'occupation_code' actually contains the Alphabetic Class Code (CL, CE, etc.)
 custom_headers = [
     "board_number", "occupation_code", "licensee_name", "doing_business_as_name",
     "class_code", "address_line_1", "address_line_2", "address_line_3",
@@ -68,11 +69,14 @@ def transform_gold_layer(engine):
         
         -- SEGMENTATION: Commercial vs Residential
         CASE 
+            -- Commercial Keywords
             WHEN address_line_1 ILIKE '%STE%' OR address_line_1 ILIKE '%SUITE%' 
                  OR address_line_1 ILIKE '%UNIT%' OR address_line_1 ILIKE '%SHOP%' 
                  OR address_line_1 ILIKE '%PLAZA%' OR address_line_1 ILIKE '%MALL%' 
                  THEN 'Commercial'
-            WHEN MAX(CASE WHEN occupation_code IN ('0502', '0503') THEN 1 ELSE 0 END) = 1 THEN 'Commercial'
+            -- If a Salon License (CE/MCS) exists here, it's Commercial
+            WHEN MAX(CASE WHEN occupation_code IN ('CE', 'MCS') THEN 1 ELSE 0 END) = 1 THEN 'Commercial'
+            -- Residential Keywords
             WHEN address_line_1 ILIKE '%APT%' OR address_line_1 ILIKE '%RESIDENCE%' 
                  THEN 'Residential'
             ELSE 'Unknown'
@@ -81,26 +85,25 @@ def transform_gold_layer(engine):
         -- METRIC: Total Licenses at this Location
         COUNT(DISTINCT license_number) as total_licenses,
 
-        -- METRICS: People Counts
-        COUNT(CASE WHEN occupation_code = '0501' THEN 1 END) as count_cosmetologist,
-        COUNT(CASE WHEN occupation_code = '0507' THEN 1 END) as count_nail_specialist,
-        COUNT(CASE WHEN occupation_code = '0508' THEN 1 END) as count_facial_specialist,
-        COUNT(CASE WHEN occupation_code = '0509' THEN 1 END) as count_full_specialist,
+        -- METRICS: People Counts (Using Letter Codes: CL, FV, FB, FS)
+        COUNT(CASE WHEN occupation_code = 'CL' THEN 1 END) as count_cosmetologist,
+        COUNT(CASE WHEN occupation_code = 'FV' THEN 1 END) as count_nail_specialist,
+        COUNT(CASE WHEN occupation_code = 'FB' THEN 1 END) as count_facial_specialist,
+        COUNT(CASE WHEN occupation_code = 'FS' THEN 1 END) as count_full_specialist,
 
-        -- METRICS: Places Counts
-        COUNT(CASE WHEN occupation_code = '0502' THEN 1 END) as count_salon,
-        COUNT(CASE WHEN occupation_code = '0503' THEN 1 END) as count_mobile_salon,
-        COUNT(CASE WHEN occupation_code = '0510' THEN 1 END) as count_owner,
+        -- METRICS: Places Counts (Using Letter Codes: CE, MCS, OR)
+        COUNT(CASE WHEN occupation_code = 'CE' THEN 1 END) as count_salon,
+        COUNT(CASE WHEN occupation_code = 'MCS' THEN 1 END) as count_mobile_salon,
+        COUNT(CASE WHEN occupation_code = 'OR' THEN 1 END) as count_owner,
 
         -- METRICS: Training Counts
-        COUNT(CASE WHEN occupation_code = '0511' THEN 1 END) as count_ce_provider,
-        COUNT(CASE WHEN occupation_code = '0512' THEN 1 END) as count_ce_course,
-        COUNT(CASE WHEN occupation_code = '0513' THEN 1 END) as count_specialty_provider,
-        COUNT(CASE WHEN occupation_code = '0517' THEN 1 END) as count_hiv_course
+        COUNT(CASE WHEN occupation_code = 'PROV' THEN 1 END) as count_ce_provider,
+        COUNT(CASE WHEN occupation_code = 'CRSE' THEN 1 END) as count_ce_course,
+        COUNT(CASE WHEN occupation_code = 'SPRV' THEN 1 END) as count_specialty_provider,
+        COUNT(CASE WHEN occupation_code = 'HIVC' THEN 1 END) as count_hiv_course
 
     FROM florida_cosmetology_bronze
     WHERE 
-        -- FIX: Use 'C' for Current and 'A' for Active
         primary_status = 'C' 
         AND secondary_status = 'A'
         AND state = 'FL'
