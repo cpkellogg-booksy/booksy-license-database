@@ -1,26 +1,23 @@
 import os
 import pandas as pd
-import certifi  # <--- Import the certificate manager
+import certifi
 from sqlalchemy import create_engine
 
 # 1. SETUP
 # Securely get the database password from GitHub Secrets
 db_string_raw = os.environ['DB_CONNECTION_STRING']
 
-# --- THE FIX ---
-# We force the connection string to use the 'certifi' bundle.
-# This tells the script exactly where to find the "ID Cards" to trust the server.
-# We also force sslmode to 'verify-full' or 'require' properly.
+# --- FIX 1: FORCE COCKROACHDB DRIVER ---
+# If the connection string says 'postgresql://', change it to 'cockroachdb://'
+# This fixes the "Could not determine version" error.
+db_string_raw = db_string_raw.replace("postgresql://", "cockroachdb://")
+
+# --- FIX 2: SSL CERTIFICATES ---
+# Add the certifi path to the connection string so GitHub trusts the database.
 if "?" in db_string_raw:
-    # If parameters already exist, append the root cert
     db_string = f"{db_string_raw}&sslrootcert={certifi.where()}"
 else:
-    # If no parameters, add the query start
     db_string = f"{db_string_raw}?sslrootcert={certifi.where()}"
-
-# Ensure we are not conflicting with an existing sslmode in the string
-# (The driver usually takes the last parameter if duplicated, or we rely on the Certifi path to make 'verify-full' work)
-# ----------------
 
 # URL for Florida Cosmetology
 csv_url = "https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv"
@@ -38,9 +35,6 @@ custom_headers = [
 # 3. CONNECT & UPLOAD
 try:
     print("Connecting to CockroachDB...")
-    # We print a masked version of the string just to debug if it fails (hiding password)
-    print(f"Using SSL Cert: {certifi.where()}")
-    
     engine = create_engine(db_string)
     
     print(f"Downloading data from {csv_url}...")
