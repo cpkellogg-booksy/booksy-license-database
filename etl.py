@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import certifi
-import usaddress # <--- The new Open Source Powerhouse
+import usaddress
 import re
 from sqlalchemy import create_engine, text
 
@@ -28,30 +28,15 @@ custom_headers = [
 ]
 
 # ==========================================
-# ROBUST OPEN SOURCE PARSING LOGIC
+# ROBUST PARSING & REPAIR LOGIC
 # ==========================================
 def parse_and_standardize(addr_str):
-    """
-    Uses machine learning (usaddress) to parse the string into components,
-    abbreviate them standardly, and identifying the unit type.
-    """
     if not isinstance(addr_str, str) or not addr_str.strip():
         return None, None
 
-    # Clean basic garbage first
     clean_str = addr_str.upper().strip().replace('.', '').replace(',', '')
     
-    try:
-        # usaddress returns an OrderedDict of parts
-        # e.g., [('123', 'AddressNumber'), ('MAIN', 'StreetName'), ('ST', 'StreetNamePostType')]
-        tagged_address, address_type = usaddress.tag(clean_str)
-    except usaddress.RepeatedLabelError:
-        # Fallback if the address is too weird for the AI (rare)
-        return clean_str, 'Unknown'
-    except Exception:
-        return clean_str, 'Unknown'
-
-    # 1. Standardize Street Suffixes (USPS Abbreviations)
+    # 1. Standardize Dictionaries
     suffix_mapping = {
         'AVENUE': 'AVE', 'STREET': 'ST', 'DRIVE': 'DR', 'BOULEVARD': 'BLVD',
         'ROAD': 'RD', 'LANE': 'LN', 'CIRCLE': 'CIR', 'COURT': 'CT', 
@@ -59,47 +44,74 @@ def parse_and_standardize(addr_str):
         'SQUARE': 'SQ', 'LOOP': 'LOOP', 'WAY': 'WAY', 'CAUSEWAY': 'CSWY'
     }
 
-    # 2. Standardize Unit Types
     unit_mapping = {
-        'SUITE': 'STE', 'STE': 'STE', 'UNIT': 'STE', 'SHOP': 'STE', # Treat Unit/Shop as Suite
+        'SUITE': 'STE', 'STE': 'STE', 'UNIT': 'STE', 'SHOP': 'STE',
         'APARTMENT': 'APT', 'APT': 'APT', 'ROOM': 'RM', 
         'BUILDING': 'BLDG', 'BLDG': 'BLDG', 'FLOOR': 'FL'
     }
 
+    try:
+        # Attempt to tag the address normally
+        tagged_dict, address_type = usaddress.tag(clean_str)
+        
+    except usaddress.RepeatedLabelError:
+        # DATA REPAIR: If we find duplicates (e.g. "123 Main 123 Main St"),
+        # we parse the raw tokens and assume the *last* sequence is the valid one.
+        try:
+            raw_tokens = usaddress.parse(clean_str)
+            
+            # Find the starting index of the LAST 'AddressNumber'
+            start_index = 0
+            for i, (token, label) in enumerate(raw_tokens):
+                if label == 'AddressNumber':
+                    start_index = i
+            
+            # Keep only the valid tail of the address
+            valid_tokens = raw_tokens[start_index:]
+            
+            # Convert list of tuples back into the dictionary format expected below
+            tagged_dict = {}
+            for token, label in valid_tokens:
+                # If a label appears twice in the tail (rare), we join them
+                if label in tagged_dict:
+                    tagged_dict[label] += " " + token
+                else:
+                    tagged_dict[label] = token
+                    
+        except Exception:
+            return clean_str, 'Unknown'
+            
+    except Exception:
+        return clean_str, 'Unknown'
+
+    # 2. Reconstruct the Clean Address
     parts = []
     
-    # We reconstruct the address in a standard order
-    # Address Number
-    if 'AddressNumber' in tagged_address:
-        parts.append(tagged_address['AddressNumber'])
+    if 'AddressNumber' in tagged_dict:
+        parts.append(tagged_dict['AddressNumber'])
         
-    # Directional (N, S, E, W)
-    if 'StreetNamePreDirectional' in tagged_address:
-        parts.append(tagged_address['StreetNamePreDirectional'])
+    if 'StreetNamePreDirectional' in tagged_dict:
+        parts.append(tagged_dict['StreetNamePreDirectional'])
         
-    # Street Name
-    if 'StreetName' in tagged_address:
-        parts.append(tagged_address['StreetName'])
+    if 'StreetName' in tagged_dict:
+        parts.append(tagged_dict['StreetName'])
         
-    # Street Suffix (Standardized)
-    if 'StreetNamePostType' in tagged_address:
-        raw_suffix = tagged_address['StreetNamePostType']
+    if 'StreetNamePostType' in tagged_dict:
+        raw_suffix = tagged_dict['StreetNamePostType']
         parts.append(suffix_mapping.get(raw_suffix, raw_suffix))
         
-    # Post Directional (NW, SE)
-    if 'StreetNamePostDirectional' in tagged_address:
-        parts.append(tagged_address['StreetNamePostDirectional'])
+    if 'StreetNamePostDirectional' in tagged_dict:
+        parts.append(tagged_dict['StreetNamePostDirectional'])
 
-    # Unit / Occupancy
-    # This is crucial for splitting "123 Main" vs "123 Main Ste 100"
+    # 3. Extract Unit Type
     unit_type = None
-    if 'OccupancyType' in tagged_address:
-        raw_unit = tagged_address['OccupancyType']
-        unit_type = unit_mapping.get(raw_unit, raw_unit) # Normalize to STE or APT
+    if 'OccupancyType' in tagged_dict:
+        raw_unit = tagged_dict['OccupancyType']
+        unit_type = unit_mapping.get(raw_unit, raw_unit)
         parts.append(unit_type)
     
-    if 'OccupancyIdentifier' in tagged_address:
-        parts.append(tagged_address['OccupancyIdentifier'])
+    if 'OccupancyIdentifier' in tagged_dict:
+        parts.append(tagged_dict['OccupancyIdentifier'])
 
     standardized_address = " ".join(parts)
     
@@ -110,7 +122,7 @@ def determine_address_type(row, unit_type):
     if row['total_licenses'] >= 3:
         return 'Commercial'
 
-    # Rule 2: Explicit Unit Type (from the Parser)
+    # Rule 2: Explicit Unit Type
     if unit_type == 'STE' or unit_type == 'BLDG':
         return 'Commercial'
     if unit_type == 'APT':
@@ -120,7 +132,7 @@ def determine_address_type(row, unit_type):
     if row['count_salon'] > 0:
         return 'Commercial'
 
-    # Rule 4: Keywords in the remaining string (Fallback)
+    # Rule 4: Keywords Fallback
     addr = row['address_clean']
     if any(x in addr for x in ['PLAZA', 'MALL', 'CTR', 'OFFICE']):
         return 'Commercial'
@@ -171,16 +183,12 @@ def transform_gold_layer(engine):
     
     print(f"   Loaded {len(df)} rows. Parsing addresses with 'usaddress'...")
     
-    # 1. Apply Parsers (This takes a moment but is worth it)
-    # The function returns a tuple, so we unzip it into two columns
     parsed_data = df['address_line_1'].apply(parse_and_standardize)
     df[['address_clean', 'unit_type_found']] = pd.DataFrame(parsed_data.tolist(), index=df.index)
     
-    # Clean City/Zip
     df['city_clean'] = df['city'].str.title().str.strip()
     df['zip_clean'] = df['zip'].astype(str).str[:5]
     
-    # 2. Pivoting / Aggregating
     print("   Grouping and pivoting...")
     
     df['is_cosmetologist'] = (df['occupation_code'] == 'CL').astype(int)
@@ -192,8 +200,7 @@ def transform_gold_layer(engine):
     df['is_owner'] = (df['occupation_code'] == 'OR').astype(int)
     df['is_training'] = df['occupation_code'].isin(['PROV', 'CRSE', 'SPRV', 'HIVC']).astype(int)
 
-    # We pass 'unit_type_found' into the grouping logic so we can access it later
-    # We use 'first' for unit_type because if the address is the same, the unit type is the same
+    # Note: We now group by the REPAIRED address_clean
     grouped = df.groupby(['address_clean', 'city_clean', 'state', 'zip_clean']).agg(
         total_licenses=('license_number', 'nunique'),
         unit_type_found=('unit_type_found', 'first'), 
@@ -207,14 +214,11 @@ def transform_gold_layer(engine):
         count_training=('is_training', 'sum')
     ).reset_index()
     
-    # 3. Classifying
     print("   Classifying locations...")
     grouped['address_type'] = grouped.apply(lambda row: determine_address_type(row, row['unit_type_found']), axis=1)
     
-    # Drop the helper column before upload if you want, or keep it. Let's drop it to keep schema clean.
     grouped = grouped.drop(columns=['unit_type_found'])
 
-    # 4. Uploading
     print("   Uploading clean Gold table...")
     grouped.to_sql('address_insights_gold', engine, if_exists='replace', index=False)
     
