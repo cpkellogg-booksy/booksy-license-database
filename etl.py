@@ -1,11 +1,12 @@
 import os
 import pandas as pd
 import certifi
+import usaddress # <--- The new Open Source Powerhouse
 import re
 from sqlalchemy import create_engine, text
 
 # ==========================================
-# CONFIGURATION & SECURITY
+# CONFIGURATION
 # ==========================================
 db_string_raw = os.environ['DB_CONNECTION_STRING']
 db_string_raw = db_string_raw.replace("postgresql://", "cockroachdb://")
@@ -27,68 +28,104 @@ custom_headers = [
 ]
 
 # ==========================================
-# HELPER: ADDRESS CLEANING LOGIC
+# ROBUST OPEN SOURCE PARSING LOGIC
 # ==========================================
-def clean_address_text(addr):
-    if not isinstance(addr, str):
-        return ""
-    
-    # 1. Uppercase and Trim
-    addr = addr.upper().strip()
-    
-    # 2. Remove punctuation (dots, commas)
-    addr = addr.replace('.', '').replace(',', '')
-    
-    # 3. Standardize Suffixes (The "Duplicate Killer")
-    # We use Regex (\b) to ensure we don't accidentally change "DRIVER" to "DRR"
-    replacements = {
-        r'\bDRIVE\b': 'DR',
-        r'\bSTREET\b': 'ST',
-        r'\bAVENUE\b': 'AVE',
-        r'\bROAD\b': 'RD',
-        r'\bBOULEVARD\b': 'BLVD',
-        r'\bPARKWAY\b': 'PKWY',
-        r'\bHIGHWAY\b': 'HWY',
-        r'\bCIRCLE\b': 'CIR',
-        r'\bCOURT\b': 'CT',
-        r'\bLANE\b': 'LN',
-        r'\bPLACE\b': 'PL',
-        r'\bTRAIL\b': 'TRL',
-        r'\bNORTH\b': 'N',
-        r'\bSOUTH\b': 'S',
-        r'\bEAST\b': 'E',
-        r'\bWEST\b': 'W',
-        r'\bSTE\b': 'STE',    # Normalize Suite
-        r'\bSUITE\b': 'STE',  # Normalize Suite
-        r'\bUNIT\b': 'STE',   # Treat Unit as Suite for grouping (optional trade-off)
-        r'\bAPARTMENT\b': 'APT',
-        r'\bAPT\b': 'APT'
-    }
-    
-    for pattern, repl in replacements.items():
-        addr = re.sub(pattern, repl, addr)
-        
-    # 4. Remove double spaces
-    addr = re.sub(r'\s+', ' ', addr)
-    
-    return addr
+def parse_and_standardize(addr_str):
+    """
+    Uses machine learning (usaddress) to parse the string into components,
+    abbreviate them standardly, and identifying the unit type.
+    """
+    if not isinstance(addr_str, str) or not addr_str.strip():
+        return None, None
 
-def determine_address_type(row):
-    addr = row['address_clean']
+    # Clean basic garbage first
+    clean_str = addr_str.upper().strip().replace('.', '').replace(',', '')
     
-    # Rule 1: Explicit Commercial Keywords
-    if any(x in addr for x in ['STE', 'SHOP', 'PLAZA', 'MALL', 'CTR', 'BLDG', 'OFFICE']):
-        return 'Commercial'
+    try:
+        # usaddress returns an OrderedDict of parts
+        # e.g., [('123', 'AddressNumber'), ('MAIN', 'StreetName'), ('ST', 'StreetNamePostType')]
+        tagged_address, address_type = usaddress.tag(clean_str)
+    except usaddress.RepeatedLabelError:
+        # Fallback if the address is too weird for the AI (rare)
+        return clean_str, 'Unknown'
+    except Exception:
+        return clean_str, 'Unknown'
+
+    # 1. Standardize Street Suffixes (USPS Abbreviations)
+    suffix_mapping = {
+        'AVENUE': 'AVE', 'STREET': 'ST', 'DRIVE': 'DR', 'BOULEVARD': 'BLVD',
+        'ROAD': 'RD', 'LANE': 'LN', 'CIRCLE': 'CIR', 'COURT': 'CT', 
+        'PARKWAY': 'PKWY', 'HIGHWAY': 'HWY', 'PLACE': 'PL', 'TRAIL': 'TRL',
+        'SQUARE': 'SQ', 'LOOP': 'LOOP', 'WAY': 'WAY', 'CAUSEWAY': 'CSWY'
+    }
+
+    # 2. Standardize Unit Types
+    unit_mapping = {
+        'SUITE': 'STE', 'STE': 'STE', 'UNIT': 'STE', 'SHOP': 'STE', # Treat Unit/Shop as Suite
+        'APARTMENT': 'APT', 'APT': 'APT', 'ROOM': 'RM', 
+        'BUILDING': 'BLDG', 'BLDG': 'BLDG', 'FLOOR': 'FL'
+    }
+
+    parts = []
     
-    # Rule 2: Explicit Residential Keywords
-    if any(x in addr for x in ['APT', 'RESIDENCE', 'HOME', 'TRLR', 'LOT']):
-        return 'Residential'
+    # We reconstruct the address in a standard order
+    # Address Number
+    if 'AddressNumber' in tagged_address:
+        parts.append(tagged_address['AddressNumber'])
         
+    # Directional (N, S, E, W)
+    if 'StreetNamePreDirectional' in tagged_address:
+        parts.append(tagged_address['StreetNamePreDirectional'])
+        
+    # Street Name
+    if 'StreetName' in tagged_address:
+        parts.append(tagged_address['StreetName'])
+        
+    # Street Suffix (Standardized)
+    if 'StreetNamePostType' in tagged_address:
+        raw_suffix = tagged_address['StreetNamePostType']
+        parts.append(suffix_mapping.get(raw_suffix, raw_suffix))
+        
+    # Post Directional (NW, SE)
+    if 'StreetNamePostDirectional' in tagged_address:
+        parts.append(tagged_address['StreetNamePostDirectional'])
+
+    # Unit / Occupancy
+    # This is crucial for splitting "123 Main" vs "123 Main Ste 100"
+    unit_type = None
+    if 'OccupancyType' in tagged_address:
+        raw_unit = tagged_address['OccupancyType']
+        unit_type = unit_mapping.get(raw_unit, raw_unit) # Normalize to STE or APT
+        parts.append(unit_type)
+    
+    if 'OccupancyIdentifier' in tagged_address:
+        parts.append(tagged_address['OccupancyIdentifier'])
+
+    standardized_address = " ".join(parts)
+    
+    return standardized_address, unit_type
+
+def determine_address_type(row, unit_type):
+    # Rule 1: High Density = Commercial
+    if row['total_licenses'] >= 3:
+        return 'Commercial'
+
+    # Rule 2: Explicit Unit Type (from the Parser)
+    if unit_type == 'STE' or unit_type == 'BLDG':
+        return 'Commercial'
+    if unit_type == 'APT':
+        return 'Residential'
+    
     # Rule 3: License Inference
-    # If a Salon License (CE) is registered here, it's likely Commercial
-    # (Note: This is imperfect as some mobile salons register to homes, but it's a strong signal)
     if row['count_salon'] > 0:
         return 'Commercial'
+
+    # Rule 4: Keywords in the remaining string (Fallback)
+    addr = row['address_clean']
+    if any(x in addr for x in ['PLAZA', 'MALL', 'CTR', 'OFFICE']):
+        return 'Commercial'
+    if any(x in addr for x in ['RESIDENCE', 'HOME', 'TRLR', 'LOT']):
+        return 'Residential'
         
     return 'Unknown'
 
@@ -117,13 +154,11 @@ def load_bronze_layer(engine):
     print("\n🥉 BRONZE: Raw data load complete.")
 
 # ==========================================
-# PHASE 2: GOLD LAYER (PYTHON TRANSFORM)
+# PHASE 2: GOLD LAYER (AI TRANSFORM)
 # ==========================================
 def transform_gold_layer(engine):
-    print("🥇 GOLD: Reading Bronze data into Python for advanced cleaning...")
+    print("🥇 GOLD: Reading Bronze data into Python for advanced parsing...")
     
-    # 1. Pull the relevant raw data into Pandas
-    # We filter for Active/Current here to save memory
     query = """
     SELECT address_line_1, city, state, zip, occupation_code, license_number
     FROM florida_cosmetology_bronze
@@ -134,18 +169,20 @@ def transform_gold_layer(engine):
     """
     df = pd.read_sql(query, engine)
     
-    print(f"   Loaded {len(df)} rows. Cleaning addresses...")
+    print(f"   Loaded {len(df)} rows. Parsing addresses with 'usaddress'...")
     
-    # 2. Apply Address Standardization
-    df['address_clean'] = df['address_line_1'].apply(clean_address_text)
+    # 1. Apply Parsers (This takes a moment but is worth it)
+    # The function returns a tuple, so we unzip it into two columns
+    parsed_data = df['address_line_1'].apply(parse_and_standardize)
+    df[['address_clean', 'unit_type_found']] = pd.DataFrame(parsed_data.tolist(), index=df.index)
+    
+    # Clean City/Zip
     df['city_clean'] = df['city'].str.title().str.strip()
     df['zip_clean'] = df['zip'].astype(str).str[:5]
     
-    # 3. Aggregate Data (The "Pivot")
-    # We want counts per clean address
+    # 2. Pivoting / Aggregating
     print("   Grouping and pivoting...")
     
-    # Create indicator columns for each type (1 if match, 0 if not)
     df['is_cosmetologist'] = (df['occupation_code'] == 'CL').astype(int)
     df['is_nail_specialist'] = (df['occupation_code'] == 'FV').astype(int)
     df['is_facial_specialist'] = (df['occupation_code'] == 'FB').astype(int)
@@ -155,9 +192,11 @@ def transform_gold_layer(engine):
     df['is_owner'] = (df['occupation_code'] == 'OR').astype(int)
     df['is_training'] = df['occupation_code'].isin(['PROV', 'CRSE', 'SPRV', 'HIVC']).astype(int)
 
-    # Group by the CLEAN address
+    # We pass 'unit_type_found' into the grouping logic so we can access it later
+    # We use 'first' for unit_type because if the address is the same, the unit type is the same
     grouped = df.groupby(['address_clean', 'city_clean', 'state', 'zip_clean']).agg(
         total_licenses=('license_number', 'nunique'),
+        unit_type_found=('unit_type_found', 'first'), 
         count_cosmetologist=('is_cosmetologist', 'sum'),
         count_nail_specialist=('is_nail_specialist', 'sum'),
         count_facial_specialist=('is_facial_specialist', 'sum'),
@@ -168,11 +207,14 @@ def transform_gold_layer(engine):
         count_training=('is_training', 'sum')
     ).reset_index()
     
-    # 4. Apply "Commercial vs Residential" Logic (Row by Row)
+    # 3. Classifying
     print("   Classifying locations...")
-    grouped['address_type'] = grouped.apply(determine_address_type, axis=1)
+    grouped['address_type'] = grouped.apply(lambda row: determine_address_type(row, row['unit_type_found']), axis=1)
     
-    # 5. Upload to Database
+    # Drop the helper column before upload if you want, or keep it. Let's drop it to keep schema clean.
+    grouped = grouped.drop(columns=['unit_type_found'])
+
+    # 4. Uploading
     print("   Uploading clean Gold table...")
     grouped.to_sql('address_insights_gold', engine, if_exists='replace', index=False)
     
@@ -185,10 +227,7 @@ try:
     print("Connecting to CockroachDB...")
     engine = create_engine(db_string)
     
-    # 1. Load the Raw Data
     load_bronze_layer(engine)
-    
-    # 2. Build the Gold Table (Now with Python Cleaning!)
     transform_gold_layer(engine)
 
     print("Success! Pipeline finished.")
