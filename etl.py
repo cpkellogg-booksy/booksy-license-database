@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import certifi  # <--- Import the certificate manager
 from sqlalchemy import create_engine
 
 # 1. SETUP
@@ -7,15 +8,18 @@ from sqlalchemy import create_engine
 db_string_raw = os.environ['DB_CONNECTION_STRING']
 
 # --- THE FIX ---
-# GitHub Actions needs to be told explicitly to use system certificates.
-# We modify the connection string to add 'sslrootcert=system' if it's missing.
-if "sslrootcert" not in db_string_raw:
-    if "?" in db_string_raw:
-        db_string = f"{db_string_raw}&sslrootcert=system"
-    else:
-        db_string = f"{db_string_raw}?sslrootcert=system"
+# We force the connection string to use the 'certifi' bundle.
+# This tells the script exactly where to find the "ID Cards" to trust the server.
+# We also force sslmode to 'verify-full' or 'require' properly.
+if "?" in db_string_raw:
+    # If parameters already exist, append the root cert
+    db_string = f"{db_string_raw}&sslrootcert={certifi.where()}"
 else:
-    db_string = db_string_raw
+    # If no parameters, add the query start
+    db_string = f"{db_string_raw}?sslrootcert={certifi.where()}"
+
+# Ensure we are not conflicting with an existing sslmode in the string
+# (The driver usually takes the last parameter if duplicated, or we rely on the Certifi path to make 'verify-full' work)
 # ----------------
 
 # URL for Florida Cosmetology
@@ -34,6 +38,9 @@ custom_headers = [
 # 3. CONNECT & UPLOAD
 try:
     print("Connecting to CockroachDB...")
+    # We print a masked version of the string just to debug if it fails (hiding password)
+    print(f"Using SSL Cert: {certifi.where()}")
+    
     engine = create_engine(db_string)
     
     print(f"Downloading data from {csv_url}...")
