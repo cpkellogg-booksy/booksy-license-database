@@ -16,9 +16,13 @@ if "?" in db_string_raw:
 else:
     db_string = f"{db_string_raw}?sslrootcert={certifi.where()}"
 
-csv_url = "https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv"
+# SOURCES
+url_cosmo = "https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv"
+url_barber_ce = "https://www2.myfloridalicense.com/sto/file_download/extracts/lic03bb.csv"
 
-custom_headers = [
+# HEADERS
+# 1. Standard License Layout (22 Cols) - For Cosmetology
+headers_cosmo = [
     "board_number", "occupation_code", "licensee_name", "doing_business_as_name",
     "class_code", "address_line_1", "address_line_2", "address_line_3",
     "city", "state", "zip", "county_code", "license_number",
@@ -27,38 +31,36 @@ custom_headers = [
     "alternate_lic_number", "ce_exemption"
 ]
 
+# 2. CE File Layout (15 Cols) - For Barbers
+# Based on your file: Rank, Client, Title, Lic#, Name, Addr1, Addr2, City, State, Zip, Exp, Course...
+headers_barber_ce = [
+    "rank_code", "client_code", "license_type_str", "license_number", "licensee_name",
+    "address_line_1", "address_line_2", "city", "state", "zip", 
+    "expiration_date", "course_number", "course_name", "credit_hours", "course_date"
+]
+
 # ==========================================
-# ROBUST PARSING & REPAIR LOGIC
+# PARSING LOGIC (ADDRESS AI)
 # ==========================================
 def parse_and_standardize(addr_str):
     if not isinstance(addr_str, str) or not addr_str.strip():
         return None, None
 
-    # STEP 1: Basic Cleanup
     clean_str = addr_str.upper().strip().replace('.', '').replace(',', '')
     
-    # STEP 2: "Double Vision" Repair (Fixes '1013 Seaway 1013 Seaway')
-    # If the string starts with digits, and those same digits appear again later, 
-    # we assume the data is corrupted and take the LAST occurrence.
+    # Repairs
     match = re.search(r'^(\d+)\s+.*(\s+\1\s+.*)', clean_str)
-    if match:
-        # Keep only the second part (the valid tail)
-        clean_str = match.group(2).strip()
+    if match: clean_str = match.group(2).strip()
+    
+    clean_str = re.sub(r'^(\d+)\s+(SUITE|STE|APT|UNIT|SHOP|BLDG)\s+([A-Z0-9-]+)\s+(.*)', r'\1 \4 \2 \3', clean_str)
 
-    # STEP 3: "Suite Shuffle" Repair (Fixes '1010 SUITE C MAIN ST')
-    # Moves "SUITE/APT/UNIT X" from the middle to the end
-    clean_str = re.sub(r'^(\d+)\s+(SUITE|STE|APT|UNIT|SHOP|BLDG)\s+([A-Z0-9-]+)\s+(.*)', 
-                       r'\1 \4 \2 \3', 
-                       clean_str)
-
-    # STEP 4: AI Parsing (usaddress)
+    # USAddress Config
     suffix_mapping = {
         'AVENUE': 'AVE', 'STREET': 'ST', 'DRIVE': 'DR', 'BOULEVARD': 'BLVD',
         'ROAD': 'RD', 'LANE': 'LN', 'CIRCLE': 'CIR', 'COURT': 'CT', 
         'PARKWAY': 'PKWY', 'HIGHWAY': 'HWY', 'PLACE': 'PL', 'TRAIL': 'TRL',
         'SQUARE': 'SQ', 'LOOP': 'LOOP', 'WAY': 'WAY', 'CAUSEWAY': 'CSWY'
     }
-
     unit_mapping = {
         'SUITE': 'STE', 'STE': 'STE', 'UNIT': 'STE', 'SHOP': 'STE',
         'APARTMENT': 'APT', 'APT': 'APT', 'ROOM': 'RM', 
@@ -66,130 +68,132 @@ def parse_and_standardize(addr_str):
     }
 
     try:
-        tagged_dict, address_type = usaddress.tag(clean_str)
-    except usaddress.RepeatedLabelError:
-        # Fallback for complex failures
-        return clean_str, 'Unknown'
-    except Exception:
+        tagged_dict, _ = usaddress.tag(clean_str)
+    except:
         return clean_str, 'Unknown'
 
-    # STEP 5: Reconstruct Clean Address
     parts = []
-    
-    if 'AddressNumber' in tagged_dict:
-        parts.append(tagged_dict['AddressNumber'])
-        
-    if 'StreetNamePreDirectional' in tagged_dict:
-        parts.append(tagged_dict['StreetNamePreDirectional'])
-        
-    if 'StreetName' in tagged_dict:
-        parts.append(tagged_dict['StreetName'])
-        
-    if 'StreetNamePostType' in tagged_dict:
-        raw_suffix = tagged_dict['StreetNamePostType']
-        parts.append(suffix_mapping.get(raw_suffix, raw_suffix))
-        
-    if 'StreetNamePostDirectional' in tagged_dict:
-        parts.append(tagged_dict['StreetNamePostDirectional'])
+    if 'AddressNumber' in tagged_dict: parts.append(tagged_dict['AddressNumber'])
+    if 'StreetNamePreDirectional' in tagged_dict: parts.append(tagged_dict['StreetNamePreDirectional'])
+    if 'StreetName' in tagged_dict: parts.append(tagged_dict['StreetName'])
+    if 'StreetNamePostType' in tagged_dict: 
+        raw = tagged_dict['StreetNamePostType']
+        parts.append(suffix_mapping.get(raw, raw))
+    if 'StreetNamePostDirectional' in tagged_dict: parts.append(tagged_dict['StreetNamePostDirectional'])
 
-    # STEP 6: Extract Unit Type
     unit_type = None
     if 'OccupancyType' in tagged_dict:
         raw_unit = tagged_dict['OccupancyType']
         unit_type = unit_mapping.get(raw_unit, raw_unit)
         parts.append(unit_type)
-    
-    if 'OccupancyIdentifier' in tagged_dict:
-        parts.append(tagged_dict['OccupancyIdentifier'])
+    if 'OccupancyIdentifier' in tagged_dict: parts.append(tagged_dict['OccupancyIdentifier'])
 
-    standardized_address = " ".join(parts)
-    
-    return standardized_address, unit_type
+    return " ".join(parts), unit_type
 
 def determine_address_type(row, unit_type):
-    # Rule 1: High Density = Commercial
-    if row['total_licenses'] >= 3:
-        return 'Commercial'
-
-    # Rule 2: Explicit Unit Type
-    if unit_type == 'STE' or unit_type == 'BLDG':
-        return 'Commercial'
-    if unit_type == 'APT':
-        return 'Residential'
+    if row['total_licenses'] >= 3: return 'Commercial'
+    if unit_type in ['STE', 'BLDG', 'SHOP']: return 'Commercial'
+    if unit_type in ['APT']: return 'Residential'
+    if row['count_salon'] > 0: return 'Commercial'
     
-    # Rule 3: License Inference
-    if row['count_salon'] > 0:
-        return 'Commercial'
-
-    # Rule 4: Keywords Fallback
     addr = row['address_clean']
-    if any(x in addr for x in ['PLAZA', 'MALL', 'CTR', 'OFFICE']):
-        return 'Commercial'
-    if any(x in addr for x in ['RESIDENCE', 'HOME', 'TRLR', 'LOT']):
-        return 'Residential'
-        
+    if any(x in addr for x in ['PLAZA', 'MALL', 'CTR', 'OFFICE']): return 'Commercial'
+    if any(x in addr for x in ['RESIDENCE', 'HOME', 'TRLR', 'LOT']): return 'Residential'
     return 'Unknown'
 
 # ==========================================
-# PHASE 1: BRONZE LAYER (RAW DATA)
+# BRONZE LAYER (LOAD RAW)
 # ==========================================
 def load_bronze_layer(engine):
-    print(f"🥉 BRONZE: Downloading raw data from {csv_url}...")
+    print("🥉 BRONZE: Loading raw data...")
     chunk_size = 10000
-    first_chunk = True
 
-    for chunk in pd.read_csv(csv_url, 
-                             chunksize=chunk_size, 
-                             header=None,
-                             names=custom_headers,
-                             storage_options={'User-Agent': 'Mozilla/5.0'},
-                             encoding='ISO-8859-1',
-                             on_bad_lines='skip'):
-        
+    # 1. Cosmetology (Standard 22 Cols)
+    print(f"   Downloading Cosmetology...")
+    first_chunk = True
+    for chunk in pd.read_csv(url_cosmo, chunksize=chunk_size, header=None, names=headers_cosmo, 
+                             storage_options={'User-Agent': 'Mozilla/5.0'}, encoding='ISO-8859-1', on_bad_lines='skip'):
         if first_chunk:
             chunk.to_sql('florida_cosmetology_bronze', engine, if_exists='replace', index=False)
             first_chunk = False
         else:
             chunk.to_sql('florida_cosmetology_bronze', engine, if_exists='append', index=False)
         print(".", end="")
-    print("\n🥉 BRONZE: Raw data load complete.")
+    
+    # 2. Barbers (CE 15 Cols)
+    print(f"\n   Downloading Barbers (CE File)...")
+    first_chunk = True
+    for chunk in pd.read_csv(url_barber_ce, chunksize=chunk_size, header=None, names=headers_barber_ce, 
+                             storage_options={'User-Agent': 'Mozilla/5.0'}, encoding='ISO-8859-1', on_bad_lines='skip'):
+        if first_chunk:
+            chunk.to_sql('florida_barbers_bronze', engine, if_exists='replace', index=False)
+            first_chunk = False
+        else:
+            chunk.to_sql('florida_barbers_bronze', engine, if_exists='append', index=False)
+        print(".", end="")
+    
+    print("\n🥉 BRONZE: Complete.")
 
 # ==========================================
-# PHASE 2: GOLD LAYER (AI TRANSFORM)
+# GOLD LAYER (NORMALIZE & MERGE)
 # ==========================================
 def transform_gold_layer(engine):
-    print("🥇 GOLD: Reading Bronze data into Python for advanced parsing...")
+    print("🥇 GOLD: Processing...")
     
-    query = """
+    # 1. Read Cosmetology
+    query_cosmo = """
     SELECT address_line_1, city, state, zip, occupation_code, license_number
     FROM florida_cosmetology_bronze
-    WHERE primary_status = 'C' 
-      AND secondary_status = 'A' 
-      AND state = 'FL'
-      AND address_line_1 IS NOT NULL
+    WHERE primary_status IN ('Current', 'C', 'Active', 'A') AND state = 'FL' AND address_line_1 IS NOT NULL
     """
-    df = pd.read_sql(query, engine)
+    df_c = pd.read_sql(query_cosmo, engine)
+    print(f"   Loaded {len(df_c)} Cosmetology records.")
     
-    print(f"   Loaded {len(df)} rows. Parsing addresses with 'usaddress'...")
+    # 2. Read Barbers (The CE File)
+    # We select rank_code as occupation_code to match the schema
+    query_barber = """
+    SELECT address_line_1, city, state, zip, rank_code as occupation_code, license_number
+    FROM florida_barbers_bronze
+    WHERE state = 'FL' AND address_line_1 IS NOT NULL
+    """
+    df_b = pd.read_sql(query_barber, engine)
+    print(f"   Loaded {len(df_b)} Barber records (Raw with duplicates).")
+
+    # 3. DEDUPLICATE BARBERS
+    # Since the CE file lists every course taken, we drop duplicates to get unique people
+    df_b = df_b.drop_duplicates(subset=['license_number'])
+    print(f"   Unique Barber professionals: {len(df_b)}")
+
+    # 4. Merge
+    df = pd.concat([df_c, df_b], ignore_index=True)
+    print(f"   Combined Total: {len(df)}")
     
-    # Apply the new ROBUST parser
+    # 5. Clean Addresses
+    print("   Parsing addresses...")
     parsed_data = df['address_line_1'].apply(parse_and_standardize)
     df[['address_clean', 'unit_type_found']] = pd.DataFrame(parsed_data.tolist(), index=df.index)
     
     df['city_clean'] = df['city'].str.title().str.strip()
     df['zip_clean'] = df['zip'].astype(str).str[:5]
     
-    print("   Grouping and pivoting...")
+    # 6. Flagging (Occupation Codes)
+    # Cosmo
+    df['is_cosmetologist'] = df['occupation_code'].isin(['CL', '0501']).astype(int)
+    df['is_nail_specialist'] = df['occupation_code'].isin(['FV', '0507']).astype(int)
+    df['is_facial_specialist'] = df['occupation_code'].isin(['FB', '0508']).astype(int)
+    df['is_full_specialist'] = df['occupation_code'].isin(['FS', '0509']).astype(int)
+    df['is_salon'] = df['occupation_code'].isin(['CE', '0502']).astype(int)
+    df['is_mobile_salon'] = df['occupation_code'].isin(['MCS', '0503']).astype(int)
     
-    df['is_cosmetologist'] = (df['occupation_code'] == 'CL').astype(int)
-    df['is_nail_specialist'] = (df['occupation_code'] == 'FV').astype(int)
-    df['is_facial_specialist'] = (df['occupation_code'] == 'FB').astype(int)
-    df['is_full_specialist'] = (df['occupation_code'] == 'FS').astype(int)
-    df['is_salon'] = (df['occupation_code'] == 'CE').astype(int)
-    df['is_mobile_salon'] = (df['occupation_code'] == 'MCS').astype(int)
-    df['is_owner'] = (df['occupation_code'] == 'OR').astype(int)
-    df['is_training'] = df['occupation_code'].isin(['PROV', 'CRSE', 'SPRV', 'HIVC']).astype(int)
+    # Barber (Codes from CE file: BB=Barber, BR=Restricted, BA=Assistant)
+    df['is_barber'] = df['occupation_code'].isin(['BB', '301', 'BR', '302', 'BA', '303']).astype(int)
+    # Note: CE files rarely list Shops (BS/304) or Owners (OR/305) but we add the logic just in case
+    df['is_barbershop'] = df['occupation_code'].isin(['BS', '304']).astype(int)
+    
+    # Owners
+    df['is_owner'] = df['occupation_code'].isin(['OR', '0510']).astype(int)
 
+    # 7. Aggregate
     grouped = df.groupby(['address_clean', 'city_clean', 'state', 'zip_clean']).agg(
         total_licenses=('license_number', 'nunique'),
         unit_type_found=('unit_type_found', 'first'), 
@@ -197,34 +201,28 @@ def transform_gold_layer(engine):
         count_nail_specialist=('is_nail_specialist', 'sum'),
         count_facial_specialist=('is_facial_specialist', 'sum'),
         count_full_specialist=('is_full_specialist', 'sum'),
+        count_barber=('is_barber', 'sum'),
         count_salon=('is_salon', 'sum'),
+        count_barbershop=('is_barbershop', 'sum'),
         count_mobile_salon=('is_mobile_salon', 'sum'),
-        count_owner=('is_owner', 'sum'),
-        count_training=('is_training', 'sum')
+        count_owner=('is_owner', 'sum')
     ).reset_index()
     
-    print("   Classifying locations...")
+    # 8. Classify
     grouped['address_type'] = grouped.apply(lambda row: determine_address_type(row, row['unit_type_found']), axis=1)
-    
     grouped = grouped.drop(columns=['unit_type_found'])
 
     print("   Uploading clean Gold table...")
     grouped.to_sql('address_insights_gold', engine, if_exists='replace', index=False)
     
-    print("🥇 GOLD: Transformation complete. Table 'address_insights_gold' created.")
+    print("🥇 GOLD: Transformation complete.")
 
-# ==========================================
-# MAIN EXECUTION
-# ==========================================
 try:
     print("Connecting to CockroachDB...")
     engine = create_engine(db_string)
-    
     load_bronze_layer(engine)
     transform_gold_layer(engine)
-
-    print("Success! Pipeline finished.")
-
+    print("Success!")
 except Exception as e:
     print(f"Error: {e}")
     exit(1)
