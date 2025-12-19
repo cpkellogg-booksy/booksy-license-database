@@ -3,11 +3,13 @@ import pandas as pd
 from sqlalchemy import create_engine
 
 # 1. SETUP
-# We grab the secure password from the environment (GitHub Secrets)
+# Securely get the database password from GitHub Secrets
 db_string = os.environ['DB_CONNECTION_STRING']
+
+# URL for Florida Cosmetology (We can add Texas/US here later)
 csv_url = "https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv"
 
-# 2. DEFINE HEADERS
+# 2. DEFINE HEADERS (Specific to Florida Cosmetology file)
 custom_headers = [
     "board_number", "occupation_code", "licensee_name", "doing_business_as_name",
     "class_code", "address_line_1", "address_line_2", "address_line_3",
@@ -19,10 +21,10 @@ custom_headers = [
 
 # 3. CONNECT & UPLOAD
 try:
-    print("Connecting to database...")
+    print("Connecting to CockroachDB...")
     engine = create_engine(db_string)
 
-    print("Downloading and processing...")
+    print(f"Downloading data from {csv_url}...")
     chunk_size = 10000
     first_chunk = True
 
@@ -34,8 +36,7 @@ try:
                              encoding='ISO-8859-1',
                              on_bad_lines='skip'):
 
-        # Using 'replace' first ensures we don't duplicate data daily.
-        # (Later we can change this to 'append' if you want history)
+        # 'replace' wipes the table clean on the first chunk to prevent duplicates
         if first_chunk:
             chunk.to_sql('florida_cosmetology', engine, if_exists='replace', index=False)
             first_chunk = False
@@ -48,4 +49,4 @@ try:
 
 except Exception as e:
     print(f"Error: {e}")
-    exit(1) # This tells GitHub to mark the run as 'Failed'
+    exit(1) # Marks the GitHub Action as failed
