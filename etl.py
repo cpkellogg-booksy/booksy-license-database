@@ -9,7 +9,6 @@ from sqlalchemy import create_engine, text
 db_string_raw = os.environ['DB_CONNECTION_STRING']
 db_string_raw = db_string_raw.replace("postgresql://", "cockroachdb://")
 
-# Best Practice: Use 'certifi' to ensure we trust the database connection securely
 if "?" in db_string_raw:
     db_string = f"{db_string_raw}&sslrootcert={certifi.where()}"
 else:
@@ -17,7 +16,6 @@ else:
 
 csv_url = "https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv"
 
-# These are the raw headers from the government file
 custom_headers = [
     "board_number", "occupation_code", "licensee_name", "doing_business_as_name",
     "class_code", "address_line_1", "address_line_2", "address_line_3",
@@ -29,7 +27,6 @@ custom_headers = [
 
 # ==========================================
 # PHASE 1: BRONZE LAYER (RAW DATA)
-# Goal: Create a perfect mirror of the source. No filtering.
 # ==========================================
 def load_bronze_layer(engine):
     print(f"🥉 BRONZE: Downloading raw data from {csv_url}...")
@@ -44,7 +41,6 @@ def load_bronze_layer(engine):
                              encoding='ISO-8859-1',
                              on_bad_lines='skip'):
         
-        # We load into 'florida_cosmetology_bronze'
         if first_chunk:
             chunk.to_sql('florida_cosmetology_bronze', engine, if_exists='replace', index=False)
             first_chunk = False
@@ -55,8 +51,6 @@ def load_bronze_layer(engine):
 
 # ==========================================
 # PHASE 2: GOLD LAYER (BUSINESS INSIGHTS)
-# Goal: Create the final table for sales/marketing. 
-#       Aggregates counts and determines location types.
 # ==========================================
 def transform_gold_layer(engine):
     print("🥇 GOLD: Starting aggregation and transformation...")
@@ -73,13 +67,11 @@ def transform_gold_layer(engine):
         LEFT(zip, 5) as zip_code,
         
         -- SEGMENTATION: Commercial vs Residential
-        -- Best Practice: We infer this based on keywords and license types present
         CASE 
             WHEN address_line_1 ILIKE '%STE%' OR address_line_1 ILIKE '%SUITE%' 
                  OR address_line_1 ILIKE '%UNIT%' OR address_line_1 ILIKE '%SHOP%' 
                  OR address_line_1 ILIKE '%PLAZA%' OR address_line_1 ILIKE '%MALL%' 
                  THEN 'Commercial'
-            -- If a Salon (0502/0503) exists here, it's Commercial
             WHEN MAX(CASE WHEN occupation_code IN ('0502', '0503') THEN 1 ELSE 0 END) = 1 THEN 'Commercial'
             WHEN address_line_1 ILIKE '%APT%' OR address_line_1 ILIKE '%RESIDENCE%' 
                  THEN 'Residential'
@@ -108,7 +100,9 @@ def transform_gold_layer(engine):
 
     FROM florida_cosmetology_bronze
     WHERE 
-        primary_status = 'Current' 
+        -- FIX: Use 'C' for Current and 'A' for Active
+        primary_status = 'C' 
+        AND secondary_status = 'A'
         AND state = 'FL'
         AND address_line_1 IS NOT NULL
     GROUP BY address_line_1, city, state, zip
@@ -127,10 +121,10 @@ try:
     print("Connecting to CockroachDB...")
     engine = create_engine(db_string)
     
-    # 1. Load the Raw Data (The Backup)
+    # 1. Load the Raw Data
     load_bronze_layer(engine)
     
-    # 2. Build the Business Table (The Product)
+    # 2. Build the Gold Table
     transform_gold_layer(engine)
 
     print("Success! Pipeline finished.")
