@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 import certifi
+import re
 from sqlalchemy import create_engine, text
 
 # ==========================================
@@ -16,7 +17,6 @@ else:
 
 csv_url = "https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv"
 
-# Note: The column we call 'occupation_code' actually contains the Alphabetic Class Code (CL, CE, etc.)
 custom_headers = [
     "board_number", "occupation_code", "licensee_name", "doing_business_as_name",
     "class_code", "address_line_1", "address_line_2", "address_line_3",
@@ -25,6 +25,72 @@ custom_headers = [
     "effective_date", "expiration_date", "blank_column", "renewal_period",
     "alternate_lic_number", "ce_exemption"
 ]
+
+# ==========================================
+# HELPER: ADDRESS CLEANING LOGIC
+# ==========================================
+def clean_address_text(addr):
+    if not isinstance(addr, str):
+        return ""
+    
+    # 1. Uppercase and Trim
+    addr = addr.upper().strip()
+    
+    # 2. Remove punctuation (dots, commas)
+    addr = addr.replace('.', '').replace(',', '')
+    
+    # 3. Standardize Suffixes (The "Duplicate Killer")
+    # We use Regex (\b) to ensure we don't accidentally change "DRIVER" to "DRR"
+    replacements = {
+        r'\bDRIVE\b': 'DR',
+        r'\bSTREET\b': 'ST',
+        r'\bAVENUE\b': 'AVE',
+        r'\bROAD\b': 'RD',
+        r'\bBOULEVARD\b': 'BLVD',
+        r'\bPARKWAY\b': 'PKWY',
+        r'\bHIGHWAY\b': 'HWY',
+        r'\bCIRCLE\b': 'CIR',
+        r'\bCOURT\b': 'CT',
+        r'\bLANE\b': 'LN',
+        r'\bPLACE\b': 'PL',
+        r'\bTRAIL\b': 'TRL',
+        r'\bNORTH\b': 'N',
+        r'\bSOUTH\b': 'S',
+        r'\bEAST\b': 'E',
+        r'\bWEST\b': 'W',
+        r'\bSTE\b': 'STE',    # Normalize Suite
+        r'\bSUITE\b': 'STE',  # Normalize Suite
+        r'\bUNIT\b': 'STE',   # Treat Unit as Suite for grouping (optional trade-off)
+        r'\bAPARTMENT\b': 'APT',
+        r'\bAPT\b': 'APT'
+    }
+    
+    for pattern, repl in replacements.items():
+        addr = re.sub(pattern, repl, addr)
+        
+    # 4. Remove double spaces
+    addr = re.sub(r'\s+', ' ', addr)
+    
+    return addr
+
+def determine_address_type(row):
+    addr = row['address_clean']
+    
+    # Rule 1: Explicit Commercial Keywords
+    if any(x in addr for x in ['STE', 'SHOP', 'PLAZA', 'MALL', 'CTR', 'BLDG', 'OFFICE']):
+        return 'Commercial'
+    
+    # Rule 2: Explicit Residential Keywords
+    if any(x in addr for x in ['APT', 'RESIDENCE', 'HOME', 'TRLR', 'LOT']):
+        return 'Residential'
+        
+    # Rule 3: License Inference
+    # If a Salon License (CE) is registered here, it's likely Commercial
+    # (Note: This is imperfect as some mobile salons register to homes, but it's a strong signal)
+    if row['count_salon'] > 0:
+        return 'Commercial'
+        
+    return 'Unknown'
 
 # ==========================================
 # PHASE 1: BRONZE LAYER (RAW DATA)
@@ -51,69 +117,64 @@ def load_bronze_layer(engine):
     print("\n🥉 BRONZE: Raw data load complete.")
 
 # ==========================================
-# PHASE 2: GOLD LAYER (BUSINESS INSIGHTS)
+# PHASE 2: GOLD LAYER (PYTHON TRANSFORM)
 # ==========================================
 def transform_gold_layer(engine):
-    print("🥇 GOLD: Starting aggregation and transformation...")
+    print("🥇 GOLD: Reading Bronze data into Python for advanced cleaning...")
     
-    clean_sql = """
-    DROP TABLE IF EXISTS address_insights_gold;
-
-    CREATE TABLE address_insights_gold AS
-    SELECT 
-        -- Location Identity
-        INITCAP(address_line_1) as address,
-        INITCAP(city) as city,
-        state,
-        LEFT(zip, 5) as zip_code,
-        
-        -- SEGMENTATION: Commercial vs Residential
-        CASE 
-            -- Commercial Keywords
-            WHEN address_line_1 ILIKE '%STE%' OR address_line_1 ILIKE '%SUITE%' 
-                 OR address_line_1 ILIKE '%UNIT%' OR address_line_1 ILIKE '%SHOP%' 
-                 OR address_line_1 ILIKE '%PLAZA%' OR address_line_1 ILIKE '%MALL%' 
-                 THEN 'Commercial'
-            -- If a Salon License (CE/MCS) exists here, it's Commercial
-            WHEN MAX(CASE WHEN occupation_code IN ('CE', 'MCS') THEN 1 ELSE 0 END) = 1 THEN 'Commercial'
-            -- Residential Keywords
-            WHEN address_line_1 ILIKE '%APT%' OR address_line_1 ILIKE '%RESIDENCE%' 
-                 THEN 'Residential'
-            ELSE 'Unknown'
-        END as address_type,
-
-        -- METRIC: Total Licenses at this Location
-        COUNT(DISTINCT license_number) as total_licenses,
-
-        -- METRICS: People Counts (Using Letter Codes: CL, FV, FB, FS)
-        COUNT(CASE WHEN occupation_code = 'CL' THEN 1 END) as count_cosmetologist,
-        COUNT(CASE WHEN occupation_code = 'FV' THEN 1 END) as count_nail_specialist,
-        COUNT(CASE WHEN occupation_code = 'FB' THEN 1 END) as count_facial_specialist,
-        COUNT(CASE WHEN occupation_code = 'FS' THEN 1 END) as count_full_specialist,
-
-        -- METRICS: Places Counts (Using Letter Codes: CE, MCS, OR)
-        COUNT(CASE WHEN occupation_code = 'CE' THEN 1 END) as count_salon,
-        COUNT(CASE WHEN occupation_code = 'MCS' THEN 1 END) as count_mobile_salon,
-        COUNT(CASE WHEN occupation_code = 'OR' THEN 1 END) as count_owner,
-
-        -- METRICS: Training Counts
-        COUNT(CASE WHEN occupation_code = 'PROV' THEN 1 END) as count_ce_provider,
-        COUNT(CASE WHEN occupation_code = 'CRSE' THEN 1 END) as count_ce_course,
-        COUNT(CASE WHEN occupation_code = 'SPRV' THEN 1 END) as count_specialty_provider,
-        COUNT(CASE WHEN occupation_code = 'HIVC' THEN 1 END) as count_hiv_course
-
+    # 1. Pull the relevant raw data into Pandas
+    # We filter for Active/Current here to save memory
+    query = """
+    SELECT address_line_1, city, state, zip, occupation_code, license_number
     FROM florida_cosmetology_bronze
-    WHERE 
-        primary_status = 'C' 
-        AND secondary_status = 'A'
-        AND state = 'FL'
-        AND address_line_1 IS NOT NULL
-    GROUP BY address_line_1, city, state, zip
-    ORDER BY total_licenses DESC;
+    WHERE primary_status = 'C' 
+      AND secondary_status = 'A' 
+      AND state = 'FL'
+      AND address_line_1 IS NOT NULL
     """
+    df = pd.read_sql(query, engine)
     
-    with engine.connect() as conn:
-        conn.execute(text(clean_sql))
+    print(f"   Loaded {len(df)} rows. Cleaning addresses...")
+    
+    # 2. Apply Address Standardization
+    df['address_clean'] = df['address_line_1'].apply(clean_address_text)
+    df['city_clean'] = df['city'].str.title().str.strip()
+    df['zip_clean'] = df['zip'].astype(str).str[:5]
+    
+    # 3. Aggregate Data (The "Pivot")
+    # We want counts per clean address
+    print("   Grouping and pivoting...")
+    
+    # Create indicator columns for each type (1 if match, 0 if not)
+    df['is_cosmetologist'] = (df['occupation_code'] == 'CL').astype(int)
+    df['is_nail_specialist'] = (df['occupation_code'] == 'FV').astype(int)
+    df['is_facial_specialist'] = (df['occupation_code'] == 'FB').astype(int)
+    df['is_full_specialist'] = (df['occupation_code'] == 'FS').astype(int)
+    df['is_salon'] = (df['occupation_code'] == 'CE').astype(int)
+    df['is_mobile_salon'] = (df['occupation_code'] == 'MCS').astype(int)
+    df['is_owner'] = (df['occupation_code'] == 'OR').astype(int)
+    df['is_training'] = df['occupation_code'].isin(['PROV', 'CRSE', 'SPRV', 'HIVC']).astype(int)
+
+    # Group by the CLEAN address
+    grouped = df.groupby(['address_clean', 'city_clean', 'state', 'zip_clean']).agg(
+        total_licenses=('license_number', 'nunique'),
+        count_cosmetologist=('is_cosmetologist', 'sum'),
+        count_nail_specialist=('is_nail_specialist', 'sum'),
+        count_facial_specialist=('is_facial_specialist', 'sum'),
+        count_full_specialist=('is_full_specialist', 'sum'),
+        count_salon=('is_salon', 'sum'),
+        count_mobile_salon=('is_mobile_salon', 'sum'),
+        count_owner=('is_owner', 'sum'),
+        count_training=('is_training', 'sum')
+    ).reset_index()
+    
+    # 4. Apply "Commercial vs Residential" Logic (Row by Row)
+    print("   Classifying locations...")
+    grouped['address_type'] = grouped.apply(determine_address_type, axis=1)
+    
+    # 5. Upload to Database
+    print("   Uploading clean Gold table...")
+    grouped.to_sql('address_insights_gold', engine, if_exists='replace', index=False)
     
     print("🥇 GOLD: Transformation complete. Table 'address_insights_gold' created.")
 
@@ -127,7 +188,7 @@ try:
     # 1. Load the Raw Data
     load_bronze_layer(engine)
     
-    # 2. Build the Gold Table
+    # 2. Build the Gold Table (Now with Python Cleaning!)
     transform_gold_layer(engine)
 
     print("Success! Pipeline finished.")
