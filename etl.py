@@ -34,9 +34,24 @@ def parse_and_standardize(addr_str):
     if not isinstance(addr_str, str) or not addr_str.strip():
         return None, None
 
+    # STEP 1: Basic Cleanup
     clean_str = addr_str.upper().strip().replace('.', '').replace(',', '')
     
-    # 1. Standardize Dictionaries
+    # STEP 2: "Double Vision" Repair (Fixes '1013 Seaway 1013 Seaway')
+    # If the string starts with digits, and those same digits appear again later, 
+    # we assume the data is corrupted and take the LAST occurrence.
+    match = re.search(r'^(\d+)\s+.*(\s+\1\s+.*)', clean_str)
+    if match:
+        # Keep only the second part (the valid tail)
+        clean_str = match.group(2).strip()
+
+    # STEP 3: "Suite Shuffle" Repair (Fixes '1010 SUITE C MAIN ST')
+    # Moves "SUITE/APT/UNIT X" from the middle to the end
+    clean_str = re.sub(r'^(\d+)\s+(SUITE|STE|APT|UNIT|SHOP|BLDG)\s+([A-Z0-9-]+)\s+(.*)', 
+                       r'\1 \4 \2 \3', 
+                       clean_str)
+
+    # STEP 4: AI Parsing (usaddress)
     suffix_mapping = {
         'AVENUE': 'AVE', 'STREET': 'ST', 'DRIVE': 'DR', 'BOULEVARD': 'BLVD',
         'ROAD': 'RD', 'LANE': 'LN', 'CIRCLE': 'CIR', 'COURT': 'CT', 
@@ -51,40 +66,14 @@ def parse_and_standardize(addr_str):
     }
 
     try:
-        # Attempt to tag the address normally
         tagged_dict, address_type = usaddress.tag(clean_str)
-        
     except usaddress.RepeatedLabelError:
-        # DATA REPAIR: If we find duplicates (e.g. "123 Main 123 Main St"),
-        # we parse the raw tokens and assume the *last* sequence is the valid one.
-        try:
-            raw_tokens = usaddress.parse(clean_str)
-            
-            # Find the starting index of the LAST 'AddressNumber'
-            start_index = 0
-            for i, (token, label) in enumerate(raw_tokens):
-                if label == 'AddressNumber':
-                    start_index = i
-            
-            # Keep only the valid tail of the address
-            valid_tokens = raw_tokens[start_index:]
-            
-            # Convert list of tuples back into the dictionary format expected below
-            tagged_dict = {}
-            for token, label in valid_tokens:
-                # If a label appears twice in the tail (rare), we join them
-                if label in tagged_dict:
-                    tagged_dict[label] += " " + token
-                else:
-                    tagged_dict[label] = token
-                    
-        except Exception:
-            return clean_str, 'Unknown'
-            
+        # Fallback for complex failures
+        return clean_str, 'Unknown'
     except Exception:
         return clean_str, 'Unknown'
 
-    # 2. Reconstruct the Clean Address
+    # STEP 5: Reconstruct Clean Address
     parts = []
     
     if 'AddressNumber' in tagged_dict:
@@ -103,7 +92,7 @@ def parse_and_standardize(addr_str):
     if 'StreetNamePostDirectional' in tagged_dict:
         parts.append(tagged_dict['StreetNamePostDirectional'])
 
-    # 3. Extract Unit Type
+    # STEP 6: Extract Unit Type
     unit_type = None
     if 'OccupancyType' in tagged_dict:
         raw_unit = tagged_dict['OccupancyType']
@@ -183,6 +172,7 @@ def transform_gold_layer(engine):
     
     print(f"   Loaded {len(df)} rows. Parsing addresses with 'usaddress'...")
     
+    # Apply the new ROBUST parser
     parsed_data = df['address_line_1'].apply(parse_and_standardize)
     df[['address_clean', 'unit_type_found']] = pd.DataFrame(parsed_data.tolist(), index=df.index)
     
@@ -200,7 +190,6 @@ def transform_gold_layer(engine):
     df['is_owner'] = (df['occupation_code'] == 'OR').astype(int)
     df['is_training'] = df['occupation_code'].isin(['PROV', 'CRSE', 'SPRV', 'HIVC']).astype(int)
 
-    # Note: We now group by the REPAIRED address_clean
     grouped = df.groupby(['address_clean', 'city_clean', 'state', 'zip_clean']).agg(
         total_licenses=('license_number', 'nunique'),
         unit_type_found=('unit_type_found', 'first'), 
