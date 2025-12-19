@@ -19,10 +19,27 @@ jobs:
         with:
           python-version: '3.9'
 
+      # I updated this line to ensure you have 'requests' for the geocoder
       - name: Install libraries
-        run: pip install -r requirements.txt
+        run: |
+          pip install pandas sqlalchemy psycopg2-binary sqlalchemy-cockroachdb certifi usaddress requests
 
+      # STEP 1: The Factory (Data Cleaning)
       - name: Run ETL script
         env:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
         run: python etl.py
+
+      # STEP 2: The Mapper (Geocoding)
+      - name: Run Map Generator
+        env:
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+        run: python map_gen.py
+
+      # STEP 3: Save the Result (So you can download it)
+      - name: Upload Map CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: florida-beauty-map
+          path: florida_beauty_map_complete.csv
+          retention-days: 5
