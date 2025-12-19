@@ -4,7 +4,7 @@ on:
   schedule:
     # Runs at 8:00 AM UTC every day
     - cron: '0 8 * * *'
-  # Allows you to click a button to run it manually
+  # Allows manual trigger for testing
   workflow_dispatch:
 
 jobs:
