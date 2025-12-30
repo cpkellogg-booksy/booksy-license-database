@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: '3.9'
 
-      # I updated this line to ensure you have 'requests' for the geocoder
+      # Ensure all dependencies are installed
       - name: Install libraries
         run: |
           pip install pandas sqlalchemy psycopg2-binary sqlalchemy-cockroachdb certifi usaddress requests
@@ -36,10 +36,10 @@ jobs:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
         run: python map_gen.py
 
-      # STEP 3: Save the Result (So you can download it)
+      # STEP 3: Save the Result (Renamed to match your new output)
       - name: Upload Map CSV
         uses: actions/upload-artifact@v4
         with:
-          name: florida-beauty-map
-          path: florida_beauty_map_complete.csv
+          name: Booksy_License_Database
+          path: Booksy_License_Database.csv
           retention-days: 5
