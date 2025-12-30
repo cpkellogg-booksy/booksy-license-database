@@ -4,7 +4,7 @@ import requests
 import io
 import time
 import certifi
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 
 # ==========================================
 # CONFIGURATION
@@ -22,7 +22,7 @@ else:
     db_string = f"{db_string_raw}?sslrootcert={certifi.where()}"
 
 def get_gold_data(engine):
-    print("📥 DB: Fetching US data (FL + TX)...")
+    print("📥 DB: Fetching latest Gold Data...")
     query = """
     SELECT 
         address_clean, city_clean, state, zip_clean, 
@@ -30,17 +30,25 @@ def get_gold_data(engine):
         count_salon, count_barbershop, address_type
     FROM address_insights_gold
     WHERE address_clean IS NOT NULL 
-      AND city_clean IS NOT NULL
-      AND zip_clean IS NOT NULL
     """
-    df = pd.read_sql(query, engine)
-    df['id'] = df.index
-    print(f"   Loaded {len(df)} locations.")
-    return df
+    return pd.read_sql(query, engine)
+
+def get_geo_cache(engine):
+    print("💾 DB: Fetching Geo Cache...")
+    # We try to load the cache. If it doesn't exist, we return an empty DF.
+    try:
+        query = "SELECT address_clean, city_clean, state, zip_clean, lat, lon FROM geo_cache"
+        df = pd.read_sql(query, engine)
+        print(f"   Cache Hit: Found {len(df)} saved locations.")
+        return df
+    except:
+        print("   Cache Miss: Table 'geo_cache' does not exist yet (Starting fresh).")
+        return pd.DataFrame(columns=['address_clean', 'city_clean', 'state', 'zip_clean', 'lat', 'lon'])
 
 def geocode_chunk(chunk_df):
     csv_buffer = io.StringIO()
     # Census expects: ID, Street, City, State, Zip
+    # We use the dataframe index as a temporary ID for the API batch
     api_payload = chunk_df[['id', 'address_clean', 'city_clean', 'state', 'zip_clean']]
     api_payload.to_csv(csv_buffer, index=False, header=False)
     csv_buffer.seek(0)
@@ -56,78 +64,98 @@ def geocode_chunk(chunk_df):
         return None
 
 def parse_census_response(response_text):
-    # Standard Census Columns
     col_names = ["id", "input", "match", "type", "matched_addr", "lon", "lat", "edge", "side"]
-    
     try:
         df = pd.read_csv(io.StringIO(response_text), names=col_names, on_bad_lines='skip')
-        
-        # Filter for matches
         df = df[df['match'] == 'Match'].copy()
         
-        # --- ROBUST COORDINATE CLEANING ---
-        # Ensure lat/lon are strings first to handle any weird formatting
+        # Clean Coords
         df['lon'] = df['lon'].astype(str).str.replace('"', '').str.strip()
         df['lat'] = df['lat'].astype(str).str.replace('"', '').str.strip()
         
-        # If "lon" mistakenly contains both (e.g. "-81.1, 28.1"), split it
+        # Handle "Combined Column" edge case
         def split_coords(row):
             if ',' in row['lon']:
                 parts = row['lon'].split(',')
-                return parts[0], parts[1] # New Lon, New Lat
+                return parts[0], parts[1]
             return row['lon'], row['lat']
 
-        # Apply the fix
         df[['lon', 'lat']] = df.apply(lambda row: pd.Series(split_coords(row)), axis=1)
-
-        # Convert to pure floats (removes any remaining junk)
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
         
         return df[['id', 'lat', 'lon']].dropna()
-        
-    except Exception as e:
-        print(f"   ⚠️ Parsing Error: {e}")
+    except:
         return pd.DataFrame()
 
 def main():
     try:
         print("🚀 START: Connecting...")
         engine = create_engine(db_string)
-        df_full = get_gold_data(engine)
         
-        all_coords = []
-        total_chunks = (len(df_full) // CHUNK_SIZE) + 1
+        # 1. Load Data
+        df_gold = get_gold_data(engine)
+        df_cache = get_geo_cache(engine)
         
-        print(f"🌎 GEOCODING: Processing {len(df_full)} rows...")
+        # 2. Identify New Addresses
+        # We merge Gold with Cache to see what is missing Lat/Lon
+        # We join on the 4 address components
+        join_keys = ['address_clean', 'city_clean', 'state', 'zip_clean']
         
-        for i in range(0, len(df_full), CHUNK_SIZE):
-            chunk = df_full.iloc[i : i + CHUNK_SIZE]
-            print(f"   Batch {(i//CHUNK_SIZE)+1}/{total_chunks}...", end=" ")
+        merged = df_gold.merge(df_cache, on=join_keys, how='left', indicator=True)
+        
+        # Rows that need geocoding are "left_only" (exist in Gold, missing in Cache)
+        to_geocode = merged[merged['_merge'] == 'left_only'].copy()
+        
+        print(f"📊 STATUS: Total Rows: {len(df_gold)}")
+        print(f"   ✅ Already Cached: {len(df_gold) - len(to_geocode)}")
+        print(f"   🆕 New to Geocode: {len(to_geocode)}")
+        
+        # 3. Geocode ONLY the new stuff
+        if not to_geocode.empty:
+            # Create a temp ID for the batch process
+            to_geocode['id'] = range(len(to_geocode))
             
-            resp = geocode_chunk(chunk)
-            if resp:
-                coords = parse_census_response(resp)
-                all_coords.append(coords)
-                print(f"Matches: {len(coords)}")
+            new_coords_list = []
+            total_chunks = (len(to_geocode) // CHUNK_SIZE) + 1
+            
+            print("🌎 PROCESSING NEW BATCHES...")
+            for i in range(0, len(to_geocode), CHUNK_SIZE):
+                chunk = to_geocode.iloc[i : i + CHUNK_SIZE]
+                print(f"   Batch {(i//CHUNK_SIZE)+1}/{total_chunks} ({len(chunk)} rows)...", end=" ")
+                
+                resp = geocode_chunk(chunk)
+                if resp:
+                    matches = parse_census_response(resp)
+                    # Join matches back to chunk to get the Address info back
+                    # (Census returns ID, we need Address+ID to save to cache)
+                    chunk_result = chunk.merge(matches, on='id', how='inner')
+                    new_coords_list.append(chunk_result[join_keys + ['lat', 'lon']])
+                    print(f"Got {len(matches)} matches.")
+                else:
+                    print("Failed.")
+                time.sleep(2)
+            
+            # 4. Save New Findings to Cache
+            if new_coords_list:
+                new_cache_entries = pd.concat(new_coords_list, ignore_index=True)
+                print(f"💾 SAVING: Adding {len(new_cache_entries)} new locations to Cache...")
+                new_cache_entries.to_sql('geo_cache', engine, if_exists='append', index=False)
             else:
-                print("Failed.")
-            time.sleep(2)
-            
-        if all_coords:
-            print("🔗 MERGING...")
-            df_coords = pd.concat(all_coords, ignore_index=True)
-            final_map = df_full.merge(df_coords, on='id', how='inner').drop(columns=['id'])
-            
-            # --- RENAMED FILE HERE ---
-            filename = "Booksy_License_Database.csv"
-            final_map.to_csv(filename, index=False)
-            print(f"✅ SUCCESS: Saved {filename}")
-        else:
-            print("❌ FAILURE: No coordinates.")
+                print("⚠️ Warning: No new matches found from API.")
+
+        # 5. Final Output Generation
+        # Reload cache (now containing old + new data) to ensure we get everything
+        final_cache = get_geo_cache(engine)
+        final_map = df_gold.merge(final_cache, on=join_keys, how='inner')
+        
+        filename = "Booksy_License_Database.csv"
+        final_map.to_csv(filename, index=False)
+        print(f"✅ SUCCESS: Map Generated! ({len(final_map)} rows)")
+        print(f"   Saved to: {filename}")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Fatal Error: {e}")
 
 if __name__ == "__main__":
     main()
