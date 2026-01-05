@@ -71,6 +71,7 @@ def geocode_census_chunk(chunk_df, batch_idx):
     payload = {'benchmark': CENSUS_BENCHMARK}
     
     try:
+        # 5 minute timeout per chunk
         response = requests.post(CENSUS_BATCH_URL, files=files, data=payload, timeout=300)
         return batch_idx, response.text
     except Exception as e:
@@ -178,15 +179,14 @@ def main():
                             res['lon'] = lon
                             mapbox_buffer.append(res)
                         
-                        # INCREMENTAL SAVE (Every 500 rows)
+                        # INCREMENTAL SAVE
                         if len(mapbox_buffer) >= MAPBOX_SAVE_INTERVAL:
                             df_buffer = pd.DataFrame(mapbox_buffer)
                             df_buffer.to_sql('geo_cache', engine, if_exists='append', index=False)
                             total_saved += len(df_buffer)
                             print(f"   💾 Saved {len(df_buffer)} rows... (Total: {total_saved})")
-                            mapbox_buffer = [] # Clear buffer
+                            mapbox_buffer = [] 
 
-                    # Save leftovers
                     if mapbox_buffer:
                         df_buffer = pd.DataFrame(mapbox_buffer)
                         df_buffer.to_sql('geo_cache', engine, if_exists='append', index=False)
@@ -228,9 +228,7 @@ def main():
                                     print(f"   ⚠️ Batch {batch_idx}: Parse failed columns.")
                             else:
                                 print(f"   ⚠️ Batch {batch_idx}: No matches found.")
-                                if batch_idx == 1:
-                                    print("   ❌ ABORT: Batch 1 failed. Stopping pipeline.")
-                                    sys.exit(1)
+                                # REMOVED FAIL FAST LOGIC HERE
                         else:
                             print(f"   ❌ Batch {batch_idx}: Request Failed.")
 
