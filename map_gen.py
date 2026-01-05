@@ -18,7 +18,9 @@ OUTPUT_FILE = "Booksy_License_Database.csv"
 # Database Connection
 try:
     db_string_raw = os.environ['DB_CONNECTION_STRING']
+    # NOTE: Ensure 'sqlalchemy-cockroachdb' is installed via pip for this schema
     db_string_raw = db_string_raw.replace("postgresql://", "cockroachdb://")
+    
     if "?" in db_string_raw:
         db_string = f"{db_string_raw}&sslrootcert={certifi.where()}"
     else:
@@ -52,11 +54,11 @@ def get_geo_cache(engine):
         return df
     except Exception:
         print("   Cache Miss: Table 'geo_cache' does not exist yet (Starting fresh).")
-        # Return empty DF with correct columns to prevent merge errors
         return pd.DataFrame(columns=['address_clean', 'city_clean', 'state', 'zip_clean', 'lat', 'lon'])
 
 def geocode_chunk(chunk_df):
     csv_buffer = io.StringIO()
+    # Ensure ID is first for the API to track rows
     api_payload = chunk_df[['id', 'address_clean', 'city_clean', 'state', 'zip_clean']]
     api_payload.to_csv(csv_buffer, index=False, header=False)
     csv_buffer.seek(0)
@@ -72,39 +74,28 @@ def geocode_chunk(chunk_df):
         return None
 
 def parse_census_response(response_text):
-    col_names = ["id", "input", "match", "type", "matched_addr", "lon", "lat", "edge", "side"]
+    # Standard Census Batch columns (8 total)
+    col_names = ["id", "input", "match", "type", "matched_addr", "coords", "tiger_line", "side"]
+    
     try:
-        # Load CSV
         df = pd.read_csv(io.StringIO(response_text), names=col_names, on_bad_lines='skip')
         
-        # Filter for matches
+        # Filter for successful matches
         df = df[df['match'] == 'Match'].copy()
         
         if df.empty:
             return pd.DataFrame(columns=['id', 'lat', 'lon'])
         
-        # Clean Coords
-        df['lon'] = df['lon'].astype(str).str.replace('"', '').str.strip()
-        df['lat'] = df['lat'].astype(str).str.replace('"', '').str.strip()
+        # The 'coords' column comes as "-74.00,40.71". Split it.
+        df[['lon', 'lat']] = df['coords'].astype(str).str.split(',', expand=True)
         
-        # Handle "Combined Column" edge case
-        def split_coords(row):
-            if ',' in row['lon']:
-                try:
-                    parts = row['lon'].split(',')
-                    return parts[0], parts[1]
-                except:
-                    return None, None
-            return row['lon'], row['lat']
-
-        df[['lon', 'lat']] = df.apply(lambda row: pd.Series(split_coords(row)), axis=1)
-        df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
-        df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
+        # Clean quotes/whitespace and convert to numeric
+        df['lon'] = pd.to_numeric(df['lon'].str.replace('"', '').str.strip(), errors='coerce')
+        df['lat'] = pd.to_numeric(df['lat'].str.replace('"', '').str.strip(), errors='coerce')
         
-        # Return only valid lat/lon
         return df[['id', 'lat', 'lon']].dropna()
-    except:
-        # Return empty structure on failure so merge doesn't break
+    except Exception as e:
+        print(f"   ⚠️ Parse Error: {e}")
         return pd.DataFrame(columns=['id', 'lat', 'lon'])
 
 def main():
@@ -124,10 +115,11 @@ def main():
         # 2. Identify New Addresses
         join_keys = ['address_clean', 'city_clean', 'state', 'zip_clean']
         
+        # CLEANING: Ensure everything is string and remove trailing ".0" from Zip codes
         for col in join_keys:
-            df_gold[col] = df_gold[col].astype(str)
+            df_gold[col] = df_gold[col].astype(str).str.replace(r'\.0$', '', regex=True)
             if not df_cache.empty:
-                df_cache[col] = df_cache[col].astype(str)
+                df_cache[col] = df_cache[col].astype(str).str.replace(r'\.0$', '', regex=True)
 
         merged = df_gold.merge(df_cache, on=join_keys, how='left', indicator=True)
         to_geocode = merged[merged['_merge'] == 'left_only'].copy()
@@ -136,23 +128,28 @@ def main():
         print(f"   ✅ Already Cached: {len(df_gold) - len(to_geocode)}")
         print(f"   🆕 New to Geocode: {len(to_geocode)}")
         
-        # 3. Geocode ONLY the new stuff
+        # 3. Geocode ONLY the new stuff (Deduped)
         if not to_geocode.empty:
-            to_geocode['id'] = range(len(to_geocode))
-            new_coords_list = []
-            total_chunks = (len(to_geocode) // CHUNK_SIZE) + 1
+            # Dedup: If 5 rows share one address, only geocode it once
+            unique_to_geocode = to_geocode.drop_duplicates(subset=join_keys).copy()
+            unique_to_geocode['id'] = range(len(unique_to_geocode))
             
-            print("🌎 PROCESSING NEW BATCHES...")
-            for i in range(0, len(to_geocode), CHUNK_SIZE):
-                chunk = to_geocode.iloc[i : i + CHUNK_SIZE]
+            new_coords_list = []
+            total_chunks = (len(unique_to_geocode) // CHUNK_SIZE) + 1
+            
+            print(f"🌎 PROCESSING {len(unique_to_geocode)} UNIQUE ADDRESSES...")
+            
+            for i in range(0, len(unique_to_geocode), CHUNK_SIZE):
+                chunk = unique_to_geocode.iloc[i : i + CHUNK_SIZE]
                 print(f"   Batch {(i//CHUNK_SIZE)+1}/{total_chunks} ({len(chunk)} rows)...", end=" ")
                 
                 resp = geocode_chunk(chunk)
                 if resp:
                     matches = parse_census_response(resp)
                     if not matches.empty:
+                        # Merge matches back to the unique chunk to recover address info
                         chunk_result = chunk.merge(matches, on='id', how='inner')
-                        # Only select columns if they actually exist
+                        
                         if 'lat' in chunk_result.columns and 'lon' in chunk_result.columns:
                             new_coords_list.append(chunk_result[join_keys + ['lat', 'lon']])
                             print(f"Got {len(matches)} matches.")
@@ -173,9 +170,10 @@ def main():
                 print("⚠️ Warning: No new matches found from API.")
 
         # 5. Final Output Generation
+        # Refetch cache to get everything (including what we just saved)
         final_cache = get_geo_cache(engine)
         for col in join_keys:
-            final_cache[col] = final_cache[col].astype(str)
+            final_cache[col] = final_cache[col].astype(str).str.replace(r'\.0$', '', regex=True)
             
         final_map = df_gold.merge(final_cache, on=join_keys, how='inner')
         
