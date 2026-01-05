@@ -28,13 +28,15 @@ jobs:
       - name: Run ETL script
         env:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
-        run: python etl.py
+        # ADDED -u HERE to see logs immediately
+        run: python -u etl.py
 
       # STEP 2: The Mapper (Geocoding)
       - name: Run Map Generator
         env:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
-        run: python map_gen.py
+        # ADDED -u HERE to see logs immediately
+        run: python -u map_gen.py
 
       # STEP 3: Save the Result (Renamed to match your new output)
       - name: Upload Map CSV
