@@ -88,16 +88,20 @@ def main():
         new_coords = []
         if MAPBOX_KEY and len(to_geocode) <= MAPBOX_ROW_LIMIT:
             print(f"⚡ MAPBOX MODE..."); workers = MAX_MAPBOX_WORKERS
+            completed = 0
             with ThreadPoolExecutor(max_workers=workers) as ex:
                 futures = {ex.submit(geocode_mapbox_single, r): r for r in to_geocode.to_dict('records')}
                 for f in as_completed(futures):
                     rid, lat, lon = f.result()
+                    completed += 1
+                    if completed % 100 == 0: print(f"   ... processed {completed}/{len(to_geocode)}")
                     if lat:
                         orig = futures[f]
                         res = {k: orig[k] for k in join_keys}; res['lat'] = lat; res['lon'] = lon
                         new_coords.append(res)
                         if len(new_coords) >= 500:
                             pd.DataFrame(new_coords).to_sql('geo_cache', engine, if_exists='append', index=False)
+                            print(f"   💾 Saved {len(new_coords)} rows to Cache.")
                             new_coords = []
         else:
             print(f"🐢 CENSUS MODE..."); chunks = []
@@ -112,7 +116,11 @@ def main():
                         if not m.empty:
                             res = futures[f].drop(columns=['lat', 'lon'], errors='ignore').merge(m, on='id', how='inner')
                             res[join_keys + ['lat', 'lon']].to_sql('geo_cache', engine, if_exists='append', index=False)
-                            print(f"   ✅ Batch {b_idx} saved.")
+                            print(f"   ✅ Batch {b_idx} saved ({len(m)} matches found).")
+                        else:
+                            print(f"   ⚠️ Batch {b_idx}: No matches found.")
+                    else:
+                        print(f"   ❌ Batch {b_idx}: Request Failed.")
         if new_coords: pd.DataFrame(new_coords).to_sql('geo_cache', engine, if_exists='append', index=False)
 
     final_cache = get_geo_cache(engine)
