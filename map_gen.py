@@ -125,7 +125,12 @@ def main():
 
     final_cache = get_geo_cache(engine)
     for col in join_keys: final_cache[col] = final_cache[col].astype(str).str.replace(r'\.0$', '', regex=True)
-    df_gold.merge(final_cache, on=join_keys, how='inner').to_csv(OUTPUT_FILE, index=False)
-    print(f"✅ SUCCESS: Map Generated!")
+    
+    # 🛠 FIX: Ensure the final output is filtered specifically for FL records only
+    final_output = df_gold.merge(final_cache, on=join_keys, how='inner')
+    final_output = final_output[final_output['state'] == 'FL']
+    
+    final_output.to_csv(OUTPUT_FILE, index=False)
+    print(f"✅ SUCCESS: Florida-Only Map Generated! ({len(final_output)} rows)")
 
 if __name__ == "__main__": main()
