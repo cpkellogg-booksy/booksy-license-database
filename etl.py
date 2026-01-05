@@ -26,8 +26,8 @@ except KeyError:
     sys.exit(1)
 
 def clean_address_ai(raw_addr):
-    # PO BOX Filter included here
-    if not isinstance(raw_addr, str) or len(raw_addr) < 5 or raw_addr.startswith('PO BOX'):
+    # PO BOX Filter
+    if not isinstance(raw_addr, str) or len(raw_addr) < 5 or raw_addr.upper().startswith('PO BOX'):
         return None
     try:
         raw_addr = raw_addr.upper().strip()
