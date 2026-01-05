@@ -158,24 +158,26 @@ def main():
                         sys.exit(1)
                     
                     if not matches.empty:
-                        # Merge matches back to the unique chunk to recover address info
-                        chunk_result = chunk.merge(matches, on='id', how='inner')
+                        # FIX: Drop empty lat/lon placeholders from chunk BEFORE merging
+                        # This prevents 'lat_x' and 'lat_y' collision
+                        chunk_clean = chunk.drop(columns=['lat', 'lon'], errors='ignore')
+                        
+                        chunk_result = chunk_clean.merge(matches, on='id', how='inner')
                         
                         if 'lat' in chunk_result.columns and 'lon' in chunk_result.columns:
                             new_coords_list.append(chunk_result[join_keys + ['lat', 'lon']])
                             print(f"Got {len(matches)} matches.")
                         else:
-                             print("No valid coords parsed.")
+                            # Debug: Print columns if it fails (so we can see if it's lat_x/lat_y)
+                            print(f"No valid coords parsed. Cols: {chunk_result.columns.tolist()}")
                     else:
                         print("No matches.")
                 else:
-                    # If the request itself failed (timeout/500 error) on Batch 1
                     if i == 0:
                         print("\n❌ CRITICAL: Batch 1 API Request Failed.")
                         sys.exit(1)
                     print("Failed.")
                 
-                # Sleep to be nice to the API
                 time.sleep(2)
             
             # 4. Save New Findings to Cache
@@ -187,7 +189,6 @@ def main():
                 print("⚠️ Warning: No new matches found from API.")
 
         # 5. Final Output Generation
-        # Refetch cache to get everything (including what we just saved)
         final_cache = get_geo_cache(engine)
         for col in join_keys:
             final_cache[col] = final_cache[col].astype(str).str.replace(r'\.0$', '', regex=True)
