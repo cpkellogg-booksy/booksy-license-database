@@ -17,6 +17,12 @@ MAPBOX_ROW_LIMIT = 3000
 MAX_MAPBOX_WORKERS = 10 
 OUTPUT_FILE = "Booksy_License_Database.csv"
 
+# Florida Bounding Box
+FL_BOUNDS = {
+    'lat_min': 24.3, 'lat_max': 31.1,
+    'lon_min': -87.7, 'lon_max': -79.8
+}
+
 try:
     db_string_raw = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
     db_string = f"{db_string_raw}{'&' if '?' in db_string_raw else '?'}sslrootcert={certifi.where()}"
@@ -126,11 +132,16 @@ def main():
     final_cache = get_geo_cache(engine)
     for col in join_keys: final_cache[col] = final_cache[col].astype(str).str.replace(r'\.0$', '', regex=True)
     
-    # 🛠 FIX: Ensure the final output is filtered specifically for FL records only
+    # Spatial Filtering
     final_output = df_gold.merge(final_cache, on=join_keys, how='inner')
-    final_output = final_output[final_output['state'] == 'FL']
+    final_output = final_output[
+        (final_output['lat'] >= FL_BOUNDS['lat_min']) & 
+        (final_output['lat'] <= FL_BOUNDS['lat_max']) & 
+        (final_output['lon'] >= FL_BOUNDS['lon_min']) & 
+        (final_output['lon'] <= FL_BOUNDS['lon_max'])
+    ]
     
     final_output.to_csv(OUTPUT_FILE, index=False)
-    print(f"✅ SUCCESS: Florida-Only Map Generated! ({len(final_output)} rows)")
+    print(f"✅ SUCCESS: Spatially Filtered Florida Map Generated! ({len(final_output)} rows)")
 
 if __name__ == "__main__": main()
