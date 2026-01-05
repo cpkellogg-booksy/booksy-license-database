@@ -18,7 +18,7 @@ OUTPUT_FILE = "Booksy_License_Database.csv"
 # Database Connection
 try:
     db_string_raw = os.environ['DB_CONNECTION_STRING']
-    # NOTE: Ensure 'sqlalchemy-cockroachdb' is installed via pip for this schema
+    # Ensure correct dialect for CockroachDB
     db_string_raw = db_string_raw.replace("postgresql://", "cockroachdb://")
     
     if "?" in db_string_raw:
@@ -67,6 +67,7 @@ def geocode_chunk(chunk_df):
     payload = {'benchmark': BENCHMARK}
     
     try:
+        # Increased timeout to 5 minutes for large chunks
         response = requests.post(CENSUS_BATCH_URL, files=files, data=payload, timeout=300)
         return response.text
     except Exception as e:
@@ -144,8 +145,18 @@ def main():
                 print(f"   Batch {(i//CHUNK_SIZE)+1}/{total_chunks} ({len(chunk)} rows)...", end=" ")
                 
                 resp = geocode_chunk(chunk)
+                
+                # --- FAIL FAST LOGIC ---
                 if resp:
                     matches = parse_census_response(resp)
+                    
+                    # GUARD CLAUSE: If Batch 1 fails completely, ABORT.
+                    if i == 0 and matches.empty:
+                        print("\n❌ CRITICAL: Batch 1 returned 0 matches.")
+                        print("   Possible causes: API is down, or Address format is invalid.")
+                        print("   Aborting pipeline to save resources.")
+                        sys.exit(1)
+                    
                     if not matches.empty:
                         # Merge matches back to the unique chunk to recover address info
                         chunk_result = chunk.merge(matches, on='id', how='inner')
@@ -158,7 +169,13 @@ def main():
                     else:
                         print("No matches.")
                 else:
+                    # If the request itself failed (timeout/500 error) on Batch 1
+                    if i == 0:
+                        print("\n❌ CRITICAL: Batch 1 API Request Failed.")
+                        sys.exit(1)
                     print("Failed.")
+                
+                # Sleep to be nice to the API
                 time.sleep(2)
             
             # 4. Save New Findings to Cache
