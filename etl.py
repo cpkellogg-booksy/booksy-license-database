@@ -26,6 +26,7 @@ except KeyError:
     sys.exit(1)
 
 def clean_address_ai(raw_addr):
+    # PO BOX Filter included here
     if not isinstance(raw_addr, str) or len(raw_addr) < 5 or raw_addr.startswith('PO BOX'):
         return None
     try:
@@ -72,7 +73,7 @@ def main():
     full_df['address_clean'] = full_df['address'].apply(clean_address_ai)
     full_df = full_df.dropna(subset=['address_clean'])
 
-    # CATEGORIZATION (Exact Florida Codes)
+    # CATEGORIZATION (Exact Florida Board Codes)
     full_df['is_barber'] = full_df['type'].str.fullmatch('BB|BR|BA', case=True).fillna(False).astype(int)
     full_df['is_cosmo'] = full_df['type'].str.fullmatch('CL|FV|FB|FS', case=True).fillna(False).astype(int)
     full_df['is_salon'] = full_df['type'].str.fullmatch('CE|MCS', case=True).fillna(False).astype(int)
@@ -90,7 +91,7 @@ def main():
     })
     grouped['address_type'] = grouped.apply(determine_type, axis=1)
 
-    print(f"✨ TRANSFORM COMPLETE: {len(grouped)} locations.")
+    print(f"✨ TRANSFORM COMPLETE: {len(grouped)} locations identified.")
     engine = create_engine(db_string)
     grouped.to_sql('address_insights_gold', engine, if_exists='replace', index=False, 
                    dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
