@@ -174,11 +174,19 @@ def main():
     full_df['city'] = full_df['city'].astype(str).str.upper().str.strip()
     full_df['zip'] = full_df['zip'].astype(str).str.split('-').str[0] # Fix zip codes like 33000-1234
     
-    # AI Address Parsing (This takes time, so we sample for speed if huge)
-    # For full prod run, remove .head() or implement batching if memory issues arise
+    # AI Address Parsing
     print("   running AI address parser (usaddress)...")
     full_df['address_clean'] = full_df['address'].apply(clean_address_ai)
     
+    # --- DEFENSIVE CODING: DATA LOSS AUDIT ---
+    failed_rows = full_df[full_df['address_clean'].isnull()]
+    if not failed_rows.empty:
+        print(f"   ⚠️  WARNING: Dropping {len(failed_rows)} rows due to unparseable addresses.")
+        # Print first 3 examples to help debugging
+        examples = failed_rows['address'].head(3).tolist()
+        print(f"       Examples: {examples}")
+    # -----------------------------------------
+
     # Remove rows where address failed to parse
     full_df = full_df.dropna(subset=['address_clean'])
     
