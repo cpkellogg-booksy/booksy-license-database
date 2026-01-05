@@ -31,14 +31,16 @@ jobs:
         # ADDED -u HERE to see logs immediately
         run: python -u etl.py
 
-      # STEP 2: The Mapper (Geocoding)
+      # STEP 2: The Mapper (Geocoding - Hybrid)
       - name: Run Map Generator
         env:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+          # NEW: Added Mapbox Token for the Turbo/Hybrid engine
+          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
         # ADDED -u HERE to see logs immediately
         run: python -u map_gen.py
 
-      # STEP 3: Save the Result (Renamed to match your new output)
+      # STEP 3: Save the Result
       - name: Upload Map CSV
         uses: actions/upload-artifact@v4
         with:
