@@ -1,17 +1,18 @@
 # Booksy License Database (ETL & Mapping Pipeline)
 
-This repository hosts a "headless" ETL (Extract, Transform, Load) pipeline that automatically aggregates professional license data. It pulls **Florida Cosmetology and Barber** licenses, cleans the addresses using AI, segments them into Commercial vs. Residential locations, and generates an interactive map file.
+This repository hosts a "headless" ETL (Extract, Transform, Load) pipeline that automatically aggregates professional license data. It currently pulls **Florida and Texas** Cosmetology and Barber licenses, cleans the addresses using AI, segments them into Commercial vs. Residential locations, and generates an interactive map file.
 
 The system is designed to be **free, open-source, and scalable**, running entirely on GitHub Actions and CockroachDB Serverless.
 
 ## 🏗 Architecture
 
 * **Sources:**
-    * [Florida DBPR Cosmetology Extract](https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv)
-    * [Florida DBPR Barber Extract](https://www2.myfloridalicense.com/sto/file_download/extracts/lic03bb.csv)
+    * [Florida DBPR Cosmetology Extract](https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv) (CSV)
+    * [Florida DBPR Barber Extract](https://www2.myfloridalicense.com/sto/file_download/extracts/lic03bb.csv) (CSV)
+    * [Texas TDLR Open Data API](https://data.texas.gov/resource/7358-krk7.json) (Socrata API)
 * **Orchestration:** **GitHub Actions** (Runs automatically every day at 8:00 AM UTC).
 * **Processing:** **Python 3.9** (Pandas, SQLAlchemy, USAddress, Requests).
-* **Geocoding:** **US Census Bureau Batch API** (Free & High Volume).
+* **Geocoding:** **US Census Bureau Batch API** (Free & High Volume) + **Smart Caching**.
 * **Storage:** **CockroachDB Serverless** (PostgreSQL-compatible).
 
 ## 🚀 Automation Flow
@@ -19,18 +20,21 @@ The system is designed to be **free, open-source, and scalable**, running entire
 The pipeline consists of two distinct stages that run sequentially:
 
 ### Stage 1: The "Factory" (`etl.py`)
-1.  **Extract:** Downloads raw CSVs for both Cosmetology and Barbers from the state government.
+1.  **Extract:**
+    * Downloads raw CSVs for Florida Cosmetology and Barbers.
+    * Streams active license data from the Texas API (filtering for Barbers, Cosmetologists, Salons, and Shops).
 2.  **Transform:**
-    * **Universal Adapter:** Normalizes the Barber file (which has a shifted schema) to match the standard Cosmetology layout.
+    * **Universal Adapter:** Normalizes the different schemas (FL CSV columns vs. TX API JSON) into a unified format.
     * **AI Cleaning:** Uses `usaddress` and custom Regex to fix "Ghost Data" (duplicate street names) and "Floating Suites."
-    * **Segmentation:** Classifies every location as **Commercial** (Salons, Suites, Malls) or **Residential** (Home-based) based on density and keywords.
+    * **Segmentation:** Classifies every location as **Commercial** (Salons, Suites, Malls) or **Residential** (Home-based) based on license density, explicit keywords, and unit types.
 3.  **Load:** Merges all data into a single `address_insights_gold` table in CockroachDB.
 
 ### Stage 2: The "Mapper" (`map_gen.py`)
 1.  **Fetch:** Reads the clean `address_insights_gold` data from the database.
-2.  **Geocode:** Sends addresses in batches of 5,000 to the **US Census Bureau Batch Geocoder** to retrieve Latitude/Longitude coordinates.
-3.  **Generate:** Outputs a `florida_beauty_map_complete.csv` file.
-4.  **Artifact:** Uploads the CSV to GitHub Actions as a downloadable zip file (ready for [Kepler.gl](https://kepler.gl)).
+2.  **Smart Cache Check:** Checks a permanent `geo_cache` table to see if the address has already been geocoded in a previous run.
+3.  **Geocode (Incremental):** Sends *only* new, unseen addresses to the **US Census Bureau Batch Geocoder** to retrieve Latitude/Longitude coordinates.
+4.  **Save:** Updates the cache with new results and generates the final output.
+5.  **Artifact:** Uploads a `Booksy_License_Database.csv` file to GitHub Actions (ready for [Kepler.gl](https://kepler.gl)).
 
 ## 🛠 Setup & Deployment
 
@@ -65,10 +69,10 @@ To run this script on your local machine:
     # Windows
     $env:DB_CONNECTION_STRING="your_cockroach_db_string"
 
-    # Run the ETL
+    # Run the ETL (Factory)
     python etl.py
     
-    # Run the Map Generator
+    # Run the Map Generator (Mapper)
     python map_gen.py
     ```
 
@@ -80,16 +84,19 @@ The final output table aggregates licenses by physical location:
 | :--- | :--- |
 | `address_clean` | The AI-standardized street address |
 | `city_clean` | Standardized City |
+| `state` | State Code (FL or TX) |
 | `address_type` | **Commercial** or **Residential** |
 | `total_licenses` | Total active licenses at this location |
 | `count_barber` | Number of Barbers |
 | `count_cosmetologist` | Number of Cosmetologists |
 | `count_salon` | Number of Salon Licenses |
 | `count_barbershop` | Number of Barber Shop Licenses |
+| `count_owner` | Number of Owner Licenses |
 
 ## 🗺 Visualization
+
 To visualize the data:
-1. Go to the **Actions** tab in this repository.
-2. Click on the latest **Daily Data Refresh** run.
-3. Scroll down to **Artifacts** and download `florida-beauty-map`.
-4. Drag and drop the CSV into [Kepler.gl](https://kepler.gl/demo).
+1.  Go to the **Actions** tab in this repository.
+2.  Click on the latest **Daily Data Refresh** run.
+3.  Scroll down to **Artifacts** and download **Booksy_License_Database**.
+4.  Unzip the file and drag the CSV into [Kepler.gl](https://kepler.gl/demo).
