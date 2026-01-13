@@ -31,6 +31,12 @@ def clean_address_ai(raw_addr):
         return (clean_addr, None) if len(clean_addr) > 3 else (None, "AI Parsing Failure")
     except: return None, "AI Parsing Error"
 
+def determine_type(row):
+    if row['total_licenses'] > 1: return 'Commercial'
+    addr = str(row['address_clean'])
+    if any(x in addr for x in ['APT', 'UNIT', 'TRLR', 'LOT']): return 'Residential'
+    return 'Commercial'
+
 def get_florida_data():
     print("🌴 FETCHING: Florida Data...")
     dfs = []
@@ -47,36 +53,30 @@ def get_florida_data():
     return pd.concat(dfs, ignore_index=True)
 
 def main():
-    print("🚀 STARTING: Florida ETL Audit Factory")
+    print("🚀 STARTING: Florida ETL Pipeline")
     raw_df = get_florida_data()
     if raw_df.empty: sys.exit(1)
 
-    # 💾 RAW STAGE: Save everything messy first
+    # RAW STAGE
     raw_df.to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
     initial_count = len(raw_df)
-    print(f"📦 RAW STAGE COMPLETE: {initial_count} records saved to {RAW_TABLE}")
 
-    # --- AUDIT & FILTER STAGE ---
+    # AUDIT & FILTER STAGE
     df = raw_df.copy()
-    
-    # 1. Status Filter
-    # C=Current, P=Probation, A=Active. Indices based on DBPR format.
     valid_status = df[df[13].isin(['C', 'P']) & (df[14] == 'A')]
     status_loss = initial_count - len(valid_status)
     
-    # 2. Address Cleaning
     df_step2 = valid_status.copy()
     df_step2 = df_step2.rename(columns={1: 'type', 5: 'a1', 6: 'a2', 8: 'city', 9: 'state', 10: 'zip'})
     df_step2['raw_address'] = (df_step2['a1'].fillna('').astype(str) + " " + df_step2['a2'].fillna('').astype(str)).str.strip()
     
     cleaned_data = df_step2['raw_address'].apply(clean_address_ai)
     df_step2['address_clean'] = cleaned_data.apply(lambda x: x[0])
-    df_step2['drop_reason'] = cleaned_data.apply(lambda x: x[1])
     
     df_step3 = df_step2.dropna(subset=['address_clean'])
     address_loss = len(df_step2) - len(df_step3)
 
-    # 3. Categorization
+    # CATEGORIZATION
     df_step3['is_barber'] = df_step3['type'].str.fullmatch('BB|BR|BA', case=True).fillna(False).astype(int)
     df_step3['is_cosmo'] = df_step3['type'].str.fullmatch('CL|FV|FB|FS', case=True).fillna(False).astype(int)
     df_step3['is_salon'] = df_step3['type'].str.fullmatch('CE|MCS', case=True).fillna(False).astype(int)
@@ -94,8 +94,9 @@ def main():
         'is_owner': 'count_owner', 'is_school': 'count_school'
     })
     grouped['total_licenses'] = grouped[['count_barber', 'count_cosmetologist', 'count_salon', 'count_barbershop']].sum(axis=1)
+    grouped['address_type'] = grouped.apply(determine_type, axis=1)
 
-    # 💾 GOLD STAGE
+    # GOLD STAGE
     grouped.to_sql(GOLD_TABLE, engine, if_exists='replace', index=False, 
                    dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
 
