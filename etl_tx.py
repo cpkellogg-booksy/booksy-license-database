@@ -1,13 +1,20 @@
-import os, sys, pandas as pd, requests, re, certifi, usaddress, numpy as np
+import os, sys, pandas as pd, requests, re, certifi, usaddress, numpy as np, io
 from sqlalchemy import create_engine
 from sqlalchemy.types import Integer, Text
 
-# CONFIGURATION - Captured the full ~1M record TDLR dataset
-TX_API_URL = "https://data.texas.gov/resource/7358-krk7.json?$limit=1200000"
+# CONFIGURATION - TDLR Direct CSV Downloads
+TDLR_URLS = {
+    'barber_schools': "https://www.tdlr.texas.gov/dbproduction2/Ltbarscl.csv",
+    'cosmo_schools': "https://www.tdlr.texas.gov/dbproduction2/Ltcosscl.csv",
+    'practitioners': "https://www.tdlr.texas.gov/dbproduction2/ltcosmos.csv",
+    'establishments': "https://www.tdlr.texas.gov/dbproduction2/ltcosshp.csv",
+    'ce_providers': "https://www.tdlr.texas.gov/dbproduction2/Ltcepcos.csv"
+}
+
 RAW_TABLE = "address_insights_tx_raw"
 GOLD_TABLE = "address_insights_tx_gold"
 
-# Subtypes aligned with your Unified Mapping Logic README
+# Unified Subtype Logic from README
 SUBTYPES = {
     'barbers': ['BA', 'BT', 'TE', 'BR'],
     'cosmo':   ['OP', 'FA', 'MA', 'HW', 'WG', 'SH', 'OR', 'MR', 'FI', 'IN', 'MI', 'WI'],
@@ -24,18 +31,15 @@ except KeyError:
     print("❌ ERROR: DB_CONNECTION_STRING missing."); sys.exit(1)
 
 def clean_address_ai(raw_addr):
-    if not isinstance(raw_addr, str) or len(raw_addr.strip()) < 3: return None, "Missing/Too Short"
-    if raw_addr.upper().startswith('PO BOX'): return None, "PO Box Filter"
-    
-    # Standardize characters
+    if not isinstance(raw_addr, str) or len(raw_addr.strip()) < 3: return None
+    if raw_addr.upper().startswith('PO BOX'): return None
     clean_val = re.sub(r'[^A-Z0-9 \-\#]', '', raw_addr.upper().strip())
     try:
         parsed, valid = usaddress.tag(clean_val)
         parts = [parsed.get(k) for k in ['AddressNumber', 'StreetName', 'StreetNamePostType', 'OccupancyType', 'OccupancyIdentifier'] if parsed.get(k)]
-        if parts: return " ".join(parts), None
-    except:
-        pass # Return the cleaned raw string if parsing fails to prevent data loss
-    return clean_val, None
+        if parts: return " ".join(parts)
+    except: pass
+    return clean_val
 
 def determine_type(row):
     if row['total_licenses'] > 1: return 'Commercial'
@@ -44,38 +48,43 @@ def determine_type(row):
     return 'Commercial'
 
 def main():
-    print(f"🚀 STARTING: Texas API ETL Pipeline (1.2M Capture)")
-    try:
-        r = requests.get(TX_API_URL, timeout=180)
-        r.raise_for_status()
-        raw_df = pd.DataFrame(r.json())
-        
-        # 💾 RAW STAGE: Save all messy data first
-        # Drop internal Socrata dicts that crash the DB driver
-        raw_df = raw_df.drop(columns=[c for c in raw_df.columns if 'computed_region' in c or '@' in c], errors='ignore')
-        raw_df.astype(str).to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
-        initial_count = len(raw_df)
-        print(f"📦 RAW STAGE COMPLETE: {initial_count} records saved.")
-    except Exception as e:
-        print(f"❌ API ERROR: {e}"); sys.exit(1)
+    print("🚀 STARTING: Texas Direct CSV ETL Pipeline")
+    all_dfs = []
+    
+    # 📡 EXTRACT: Download all files
+    for name, url in TDLR_URLS.items():
+        try:
+            print(f"   📥 Downloading: {name}...")
+            r = requests.get(url, timeout=180, verify=False)
+            df = pd.read_csv(io.BytesIO(r.content), encoding='latin1', low_memory=False)
+            df['source_file'] = name
+            all_dfs.append(df)
+        except Exception as e:
+            print(f"   ⚠️ Warning {name}: {e}")
+
+    if not all_dfs: sys.exit(1)
+    raw_df = pd.concat(all_dfs, ignore_index=True)
+    
+    # 💾 RAW STAGE: Save messy combined data
+    raw_df.astype(str).to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
+    initial_count = len(raw_df)
+    print(f"📦 RAW STAGE COMPLETE: {initial_count} records saved.")
 
     # --- AUDIT & TRANSFORM STAGE ---
     df = raw_df.copy().replace('', np.nan)
     
-    # 1. Fallback Logic: Use Mailing Address if Business Address is null (essential for individuals)
-    df['a1'] = df['business_address_line1'].fillna(df['mailing_address_line1'])
-    df['a2'] = df['business_address_line2'].fillna(df['mailing_address_line2'])
-    df['loc_combined'] = df['business_city_state_zip'].fillna(df['mailing_address_city_state_zip'])
+    # Address Fallback Logic (Essential for Individual Practitioners)
+    df['a1'] = df['BUSINESS ADDRESS-LINE1'].fillna(df['MAILING ADDRESS LINE1'])
+    df['a2'] = df['BUSINESS ADDRESS-LINE2'].fillna(df['MAILING ADDRESS LINE2'])
+    df['loc_combined'] = df['BUSINESS CITY, STATE ZIP'].fillna(df['MAILING ADDRESS CITY, STATE ZIP'])
     
     df['raw_address'] = (df['a1'].fillna('').astype(str) + " " + df['a2'].fillna('').astype(str)).str.strip()
-    
-    cleaned_results = df['raw_address'].apply(clean_address_ai)
-    df['address_clean'] = cleaned_results.apply(lambda x: x[0] if x else None)
+    df['address_clean'] = df['raw_address'].apply(clean_address_ai)
     
     df_step2 = df.dropna(subset=['address_clean']).copy()
     address_loss = initial_count - len(df_step2)
 
-    # 2. Location Parsing (Fixes KeyError: business_zip)
+    # Location Parsing
     loc_parsed = df_step2['loc_combined'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
     df_step2['city_clean'] = loc_parsed[0].str.strip()
     df_step2['zip_clean'] = loc_parsed[1].str[:5]
@@ -83,9 +92,9 @@ def main():
     df_step3 = df_step2.dropna(subset=['city_clean', 'zip_clean']).copy()
     location_loss = len(df_step2) - len(df_step3)
 
-    # 3. Categorization logic using Type + Subtype
-    l_type = df_step3['license_type'].str.upper().fillna('')
-    l_sub = df_step3['license_subtype'].str.upper().fillna('')
+    # CATEGORIZATION
+    l_type = df_step3['LICENSE TYPE'].str.upper().fillna('')
+    l_sub = df_step3['LICENSE SUBTYPE'].str.upper().fillna('')
 
     df_step3['count_barber'] = ((l_type.str.contains('BARBER')) & (l_sub.isin(SUBTYPES['barbers']))).astype(int)
     df_step3['count_cosmetologist'] = ((l_type.str.contains('COSMO')) & (l_sub.isin(SUBTYPES['cosmo']))).astype(int)
@@ -94,7 +103,7 @@ def main():
     df_step3['count_school'] = (l_sub.isin(SUBTYPES['schools'])).astype(int)
     df_step3['count_booth'] = (l_type.str.contains('BOOTH')).astype(int)
 
-    # 4. Aggregation and Deduplication
+    # 4. Aggregation & Deduplication
     grouped = df_step3.groupby(['address_clean', 'city_clean', 'zip_clean']).agg({
         'count_barber': 'sum', 'count_cosmetologist': 'sum', 'count_salon': 'sum',
         'count_barbershop': 'sum', 'count_school': 'sum', 'count_booth': 'sum'
@@ -103,7 +112,6 @@ def main():
     grouped['state'] = 'TX'
     grouped['total_licenses'] = grouped[['count_barber', 'count_cosmetologist', 'count_salon', 'count_barbershop', 'count_school', 'count_booth']].sum(axis=1)
     
-    # Filter for beauty-related leads and tag Commercial status
     grouped = grouped[grouped['total_licenses'] > 0].copy()
     grouped['address_type'] = grouped.apply(determine_type, axis=1)
 
