@@ -18,18 +18,17 @@ except KeyError:
     print("❌ ERROR: DB_CONNECTION_STRING missing."); sys.exit(1)
 
 def clean_address_ai(raw_addr):
-    if not isinstance(raw_addr, str) or len(raw_addr) < 5: return None, "Too Short"
+    if not isinstance(raw_addr, str) or len(raw_addr) < 3: return None, "Too Short"
     if raw_addr.upper().startswith('PO BOX'): return None, "PO Box Filter"
+    
+    clean_val = re.sub(r'[^A-Z0-9 \-\#]', '', raw_addr.upper().strip())
     try:
-        raw_addr = raw_addr.upper().strip()
-        raw_addr = re.sub(r'[^A-Z0-9 \-\#]', '', raw_addr)
-        parsed, valid = usaddress.tag(raw_addr)
-        parts = []
-        for key in ['AddressNumber', 'StreetName', 'StreetNamePostType', 'OccupancyType', 'OccupancyIdentifier']:
-            if key in parsed: parts.append(parsed[key])
-        clean_addr = " ".join(parts)
-        return (clean_addr, None) if len(clean_addr) > 3 else (None, "AI Parsing Failure")
-    except: return None, "AI Parsing Error"
+        parsed, valid = usaddress.tag(clean_val)
+        parts = [parsed.get(k) for k in ['AddressNumber', 'StreetName', 'StreetNamePostType', 'OccupancyType', 'OccupancyIdentifier'] if parsed.get(k)]
+        if parts: return " ".join(parts), None
+    except:
+        pass
+    return clean_val, None
 
 def determine_type(row):
     if row['total_licenses'] > 1: return 'Commercial'
@@ -68,14 +67,14 @@ def main():
     df_step2 = df_step2.rename(columns={1: 'type', 5: 'a1', 6: 'a2', 8: 'city', 9: 'state', 10: 'zip'})
     df_step2['raw_address'] = (df_step2['a1'].fillna('').astype(str) + " " + df_step2['a2'].fillna('').astype(str)).str.strip()
     
-    cleaned_data = df_step2['raw_address'].apply(clean_address_ai)
-    df_step2['address_clean'] = cleaned_data.apply(lambda x: x[0])
+    cleaned_results = df_step2['raw_address'].apply(clean_address_ai)
+    df_step2['address_clean'] = cleaned_results.apply(lambda x: x[0] if x else None)
     
-    # FIXED: Added .copy() here to prevent repeated SettingWithCopyWarning
+    # FIXED: Added .copy() here to stop repeated warnings
     df_step3 = df_step2.dropna(subset=['address_clean']).copy()
     address_loss = len(df_step2) - len(df_step3)
 
-    # CATEGORIZATION
+    # Categorization
     df_step3['is_barber'] = df_step3['type'].str.fullmatch('BB|BR|BA', case=True).fillna(False).astype(int)
     df_step3['is_cosmo'] = df_step3['type'].str.fullmatch('CL|FV|FB|FS', case=True).fillna(False).astype(int)
     df_step3['is_salon'] = df_step3['type'].str.fullmatch('CE|MCS', case=True).fillna(False).astype(int)
@@ -95,12 +94,11 @@ def main():
     grouped['total_licenses'] = grouped[['count_barber', 'count_cosmetologist', 'count_salon', 'count_barbershop']].sum(axis=1)
     grouped['address_type'] = grouped.apply(determine_type, axis=1)
 
-    # GOLD STAGE
     grouped.to_sql(GOLD_TABLE, engine, if_exists='replace', index=False, 
                    dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
 
     print(f"\n--- FLORIDA AUDIT REPORT ---")
-    print(f"Total Raw Records:    {initial_count}")
+    print(Initial Raw Records:    {initial_count}")
     print(f"Removed (Inactive/S): {status_loss}")
     print(f"Removed (PO Box/Bad): {address_loss}")
     print(f"Final Gold Locations: {len(grouped)}")
