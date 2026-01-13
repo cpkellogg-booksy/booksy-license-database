@@ -19,8 +19,9 @@ SUBTYPE_MAP = {
 }
 
 try:
+    # FIXED: Standardized connection string logic
     db_string = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
-    db_string = f"{db_string}{'&' if '?' in db_string_raw else '?'}sslrootcert={certifi.where()}"
+    db_string = f"{db_string}{'&' if '?' in db_string else '?'}sslrootcert={certifi.where()}"
     engine = create_engine(db_string)
 except KeyError:
     print("❌ ERROR: DB_CONNECTION_STRING missing."); sys.exit(1)
