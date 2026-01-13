@@ -1,16 +1,3 @@
-To integrate the **free, statewide Texas Comptroller data** into your pipeline, I have updated your `etl_tx.py` script.
-
-This version adds a new enrichment step that downloads the **Active Sales Tax Permit Holders** database directly from the State of Texas. This is the single best free source for finding physical addresses for businesses (LLCs, Salons, Barbershops) that might otherwise be listed with only a name in the TDLR files.
-
-### **Key Changes in This Version**
-
-1. **New Data Source:** Added `COMPTROLLER_URL` pointing to the Texas Open Data Portal's "Active Sales Tax Permit Holders" CSV export.
-2. **New Enrichment Function:** `enrich_from_comptroller()` downloads this statewide file, builds a lookup dictionary mapping **Taxpayer Names** to **Outlet Addresses**, and fills in missing practitioner addresses.
-3. **Optimization:** The script reads only the necessary columns (`Taxpayer Name`, `Outlet Address`, `Outlet City`, `Outlet Zip Code`) to keep memory usage low, even with millions of records.
-
-### **Final Updated Texas ETL (`etl_tx.py`)**
-
-```python
 import os, sys, pandas as pd, requests, re, certifi, usaddress, numpy as np, io, zipfile, urllib3
 from sqlalchemy import create_engine
 from sqlalchemy.types import Integer, Text
@@ -28,7 +15,6 @@ TDLR_URLS = {
 }
 
 # Texas Comptroller - Active Sales Tax Permit Holders (Statewide, Free)
-# This dataset links Business Names to Physical Outlet Addresses
 COMPTROLLER_URL = "https://data.texas.gov/api/views/jrea-zgmq/rows.csv?accessType=DOWNLOAD"
 
 # Harris County Appraisal District (HCAD) Public Data Links
@@ -125,32 +111,24 @@ def enrich_from_comptroller(df_target):
 
     try:
         print("   ⬇️ Downloading Texas Active Sales Tax Permit Holders (Statewide)...")
-        # Stream download to avoid memory issues with massive files
         r = requests.get(COMPTROLLER_URL, stream=True, verify=False, timeout=600)
         
-        # Read only necessary columns: Taxpayer Name, Outlet Address info
-        # Using on_bad_lines='skip' to be robust
         df_tax = pd.read_csv(io.BytesIO(r.content), 
                              usecols=['Taxpayer Name', 'Outlet Address', 'Outlet City', 'Outlet Zip Code'],
                              dtype=str, on_bad_lines='skip')
         
         print(f"   ... Loaded {len(df_tax)} Taxpayer Records. Indexing...")
         
-        # Normalize for matching
         df_tax['match_key'] = df_tax['Taxpayer Name'].str.strip().str.upper()
-        df_target['match_key'] = df_target['BUSINESS NAME'].str.strip().str.upper() # Match on Business Name logic
+        df_target['match_key'] = df_target['BUSINESS NAME'].str.strip().str.upper()
         
-        # Deduplicate to create unique lookup (One business name -> One address)
-        # We drop duplicates to prioritize the first found outlet for a given name
         tax_unique = df_tax.drop_duplicates(subset=['match_key'])
         tax_lookup = tax_unique.set_index('match_key')[['Outlet Address', 'Outlet City', 'Outlet Zip Code']].to_dict('index')
         
         def apply_tax_match(row):
-            # Only try if address is missing and we have a Business Name
             if pd.isnull(row['address_clean']) and pd.notnull(row['match_key']):
                 match = tax_lookup.get(row['match_key'])
                 if match:
-                    # Validate address is not PO Box before returning
                     raw_addr = str(match['Outlet Address'])
                     if 'PO BOX' not in raw_addr.upper():
                         return raw_addr, match['Outlet City'], match['Outlet Zip Code']
@@ -158,18 +136,16 @@ def enrich_from_comptroller(df_target):
 
         enriched = df_target.apply(apply_tax_match, axis=1, result_type='expand')
         
-        # Update Main DataFrame
         updates = enriched[0].notnull()
         df_target.loc[updates, 'address_clean'] = enriched.loc[updates, 0]
-        # Update fallback columns if not already set
+        
         if 'enriched_city' not in df_target.columns: df_target['enriched_city'] = np.nan
         if 'enriched_zip' not in df_target.columns: df_target['enriched_zip'] = np.nan
         
         df_target.loc[updates, 'enriched_city'] = df_target.loc[updates, 'enriched_city'].fillna(enriched.loc[updates, 1])
         df_target.loc[updates, 'enriched_zip'] = df_target.loc[updates, 'enriched_zip'].fillna(enriched.loc[updates, 2])
         
-        matches = updates.sum()
-        print(f"   ✅ COMPTROLLER MATCHES FOUND: {matches}")
+        print(f"   ✅ COMPTROLLER MATCHES FOUND: {updates.sum()}")
         
     except Exception as e:
         print(f"   ⚠️ Failed to process Comptroller data: {e}")
@@ -226,7 +202,6 @@ def main():
     print("🚀 STARTING: Texas Direct CSV ETL Pipeline (Internal + Comptroller + CAD)")
     all_dfs = []
     
-    # 1. EXTRACT TDLR DATA
     for name, url in TDLR_URLS.items():
         try:
             print(f"   📥 Downloading: {name}...")
@@ -242,10 +217,8 @@ def main():
     raw_df.astype(str).to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
     initial_count = len(raw_df)
 
-    # 2. TRANSFORM & STANDARDIZE
     df = raw_df.copy().replace('', np.nan)
     
-    # Initial Address Fallback
     df['a1'] = df['BUSINESS ADDRESS-LINE1'].fillna(df['MAILING ADDRESS LINE1'])
     df['a2'] = df['BUSINESS ADDRESS-LINE2'].fillna(df['MAILING ADDRESS LINE2'])
     df['loc_combined'] = df['BUSINESS CITY, STATE ZIP'].fillna(df['MAILING ADDRESS CITY, STATE ZIP'])
@@ -255,7 +228,7 @@ def main():
     missing_before = df['address_clean'].isnull().sum()
     print(f"\n📊 AUDIT: Missing Addresses Baseline: {missing_before}")
 
-    # 3. INTERNAL SKIP TRACE (Shop Lookup)
+    # INTERNAL SKIP TRACE
     print("\n🔎 STARTING: Internal Skip Trace")
     shops_df = df[df['source_file'].isin(['establishments', 'barber_schools', 'cosmo_schools'])].dropna(subset=['address_clean'])
     loc_p = shops_df['loc_combined'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
@@ -279,18 +252,17 @@ def main():
     
     print(f"   ✅ Internal Matches Found: {updates.sum()}")
 
-    # 4. COMPTROLLER ENRICHMENT (Statewide Sales Tax)
+    # COMPTROLLER ENRICHMENT
     df = enrich_from_comptroller(df)
 
-    # 5. EXTERNAL CAD ENRICHMENT (Property Records)
+    # EXTERNAL CAD ENRICHMENT
     df = enrich_from_external_cad(df)
 
-    # 6. FINAL CLEANING
+    # FINAL CLEANING
     df_step2 = df.dropna(subset=['address_clean']).copy()
     address_loss = initial_count - len(df_step2)
 
     loc_parsed = df_step2['loc_combined'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
-    # Use enriched city/zip if parsed is missing
     if 'enriched_city' in df_step2.columns:
         df_step2['city_clean'] = loc_parsed[0].str.strip().fillna(df_step2['enriched_city'])
         df_step2['zip_clean'] = loc_parsed[1].str[:5].fillna(df_step2['enriched_zip'])
@@ -300,7 +272,7 @@ def main():
     
     df_step3 = df_step2.dropna(subset=['city_clean', 'zip_clean']).copy()
 
-    # 7. CATEGORIZATION
+    # CATEGORIZATION
     l_type = df_step3['LICENSE TYPE'].str.upper().fillna('')
     l_sub = df_step3['LICENSE SUBTYPE'].str.upper().fillna('')
 
@@ -311,7 +283,7 @@ def main():
     df_step3['count_school'] = (l_sub.isin(SUBTYPES['schools'])).astype(int)
     df_step3['count_booth'] = (l_type.str.contains('BOOTH')).astype(int)
 
-    # 8. AGGREGATION & GOLD STAGE
+    # AGGREGATION
     grouped = df_step3.groupby(['address_clean', 'city_clean', 'zip_clean']).agg({
         'count_barber': 'sum', 'count_cosmetologist': 'sum', 'count_salon': 'sum',
         'count_barbershop': 'sum', 'count_school': 'sum', 'count_booth': 'sum'
@@ -332,5 +304,3 @@ def main():
     print(f"-------------------------------\n")
 
 if __name__ == "__main__": main()
-
-```
