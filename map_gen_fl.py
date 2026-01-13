@@ -15,7 +15,8 @@ CENSUS_CHUNK_SIZE = 5000
 MAX_CENSUS_WORKERS = 4  
 MAPBOX_ROW_LIMIT = 3000 
 MAX_MAPBOX_WORKERS = 10 
-OUTPUT_FILE = "Booksy_License_Database.csv"
+# UPDATED: Standardized output filename for Florida
+OUTPUT_FILE = "Booksy_FL_Licenses.csv"
 
 # Florida Bounding Box
 FL_BOUNDS = {
@@ -33,10 +34,11 @@ MAPBOX_KEY = os.environ.get('MAPBOX_ACCESS_TOKEN')
 
 def get_gold_data(engine):
     print("📥 DB: Fetching Florida Gold Data...")
+    # UPDATED: Pulling from the state-specific fl_gold table
     query = """
     SELECT address_clean, city_clean, state, zip_clean, total_licenses, 
            count_barber, count_cosmetologist, count_salon, count_barbershop, count_owner, address_type
-    FROM address_insights_gold
+    FROM address_insights_fl_gold
     WHERE address_clean IS NOT NULL AND state = 'FL'
     """
     return pd.read_sql(query, engine)
