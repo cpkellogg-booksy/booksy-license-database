@@ -12,17 +12,25 @@ jobs:
         with:
           python-version: '3.9'
       - run: pip install pandas sqlalchemy psycopg2-binary sqlalchemy-cockroachdb certifi usaddress requests
-      - name: Run ETL
-        env:
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
-        run: python -u etl.py
-      - name: Run Mapper
+      
+      - name: Run Florida Pipeline
         env:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
           MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
-        run: python -u map_gen.py
+        run: |
+          python -u etl_fl.py
+          python -u map_gen_fl.py
+          
+      - name: Run Texas Pipeline
+        env:
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
+        run: |
+          python -u etl_tx.py
+          python -u map_gen_tx.py
+          
       - uses: actions/upload-artifact@v4
         with:
-          name: Booksy_License_Database
-          path: Booksy_License_Database.csv
+          name: Booksy_License_Data_Full
+          path: Booksy_*.csv
           retention-days: 5
