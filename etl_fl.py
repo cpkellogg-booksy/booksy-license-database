@@ -57,11 +57,9 @@ def main():
     raw_df = get_florida_data()
     if raw_df.empty: sys.exit(1)
 
-    # RAW STAGE
     raw_df.to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
     initial_count = len(raw_df)
 
-    # AUDIT & FILTER STAGE
     df = raw_df.copy()
     valid_status = df[df[13].isin(['C', 'P']) & (df[14] == 'A')]
     status_loss = initial_count - len(valid_status)
@@ -73,10 +71,10 @@ def main():
     cleaned_data = df_step2['raw_address'].apply(clean_address_ai)
     df_step2['address_clean'] = cleaned_data.apply(lambda x: x[0])
     
-    df_step3 = df_step2.dropna(subset=['address_clean'])
+    # FIXED: Added .copy() here to stop repetative SettingWithCopyWarnings
+    df_step3 = df_step2.dropna(subset=['address_clean']).copy()
     address_loss = len(df_step2) - len(df_step3)
 
-    # CATEGORIZATION
     df_step3['is_barber'] = df_step3['type'].str.fullmatch('BB|BR|BA', case=True).fillna(False).astype(int)
     df_step3['is_cosmo'] = df_step3['type'].str.fullmatch('CL|FV|FB|FS', case=True).fillna(False).astype(int)
     df_step3['is_salon'] = df_step3['type'].str.fullmatch('CE|MCS', case=True).fillna(False).astype(int)
@@ -96,7 +94,6 @@ def main():
     grouped['total_licenses'] = grouped[['count_barber', 'count_cosmetologist', 'count_salon', 'count_barbershop']].sum(axis=1)
     grouped['address_type'] = grouped.apply(determine_type, axis=1)
 
-    # GOLD STAGE
     grouped.to_sql(GOLD_TABLE, engine, if_exists='replace', index=False, 
                    dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
 
