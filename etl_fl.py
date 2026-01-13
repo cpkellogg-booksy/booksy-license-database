@@ -16,6 +16,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # CONFIGURATION
 FL_COSMO_URL = "https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv"
 FL_BARBER_URL = "https://www2.myfloridalicense.com/sto/file_download/extracts/lic03bb.csv"
+# HIGHLIGHT: Updated table name for state isolation
+TARGET_TABLE = 'address_insights_fl_gold' 
 
 try:
     db_string_raw = os.environ['DB_CONNECTION_STRING']
@@ -26,7 +28,6 @@ except KeyError:
     sys.exit(1)
 
 def clean_address_ai(raw_addr):
-    # PO BOX Filter
     if not isinstance(raw_addr, str) or len(raw_addr) < 5 or raw_addr.upper().startswith('PO BOX'):
         return None
     try:
@@ -55,6 +56,11 @@ def get_florida_data():
             print(f"   Downloading {name}...")
             r = requests.get(url, verify=False, timeout=60)
             df = pd.read_csv(io.BytesIO(r.content), encoding='latin1', on_bad_lines='skip', header=None)
+            
+            # HIGHLIGHT: Enforced Status Filters (Index 13=Primary, 14=Secondary)
+            df = df[df[13].isin(['C', 'P'])] # Current or Probation
+            df = df[df[14] == 'A']           # Active only
+            
             df = df.rename(columns={1: 'type', 5: 'a1', 6: 'a2', 8: 'city', 9: 'state', 10: 'zip'})
             df['address'] = (df['a1'].fillna('').astype(str) + " " + df['a2'].fillna('').astype(str)).str.strip()
             return df[['type', 'address', 'city', 'state', 'zip']]
@@ -65,12 +71,11 @@ def get_florida_data():
     return pd.concat(dfs) if dfs else pd.DataFrame()
 
 def main():
-    print("🚀 STARTING: ETL Factory")
+    print("🚀 STARTING: Florida ETL Factory")
     full_df = get_florida_data()
     if full_df.empty: sys.exit(1)
     
-    full_df['address'] = full_df['address'].astype(str).str.upper().str.strip()
-    full_df['address_clean'] = full_df['address'].apply(clean_address_ai)
+    full_df['address_clean'] = full_df['address'].astype(str).str.upper().apply(clean_address_ai)
     full_df = full_df.dropna(subset=['address_clean'])
 
     # CATEGORIZATION (Exact Florida Board Codes)
@@ -93,8 +98,9 @@ def main():
 
     print(f"✨ TRANSFORM COMPLETE: {len(grouped)} locations identified.")
     engine = create_engine(db_string)
-    grouped.to_sql('address_insights_gold', engine, if_exists='replace', index=False, 
+    # HIGHLIGHT: Save to state-specific table
+    grouped.to_sql(TARGET_TABLE, engine, if_exists='replace', index=False, 
                    dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
-    print("✅ SUCCESS: Gold table updated.")
+    print(f"✅ SUCCESS: {TARGET_TABLE} table updated.")
 
 if __name__ == "__main__": main()
