@@ -7,7 +7,7 @@ TX_API_URL = "https://data.texas.gov/resource/7358-krk7.json?$limit=100000"
 RAW_TABLE = "address_insights_tx_raw"
 GOLD_TABLE = "address_insights_tx_gold"
 
-# Unified Subtype Lists validated against TDLR example data
+# Validated Subtype Lists based on example data
 SUBTYPES = {
     'barber_people': ['BA', 'BT', 'TE', 'BR', 'MR'],
     'barber_places': ['BS', 'DS', 'MS'],
@@ -17,17 +17,17 @@ SUBTYPES = {
 }
 
 try:
-    # Fix: Standardized database connection logic (resolves db_string_raw typo)
-    base_conn = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
-    sep = '&' if '?' in base_conn else '?'
-    db_string = f"{base_conn}{sep}sslrootcert={certifi.where()}"
+    # Standardized database connection string logic
+    conn_base = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
+    sep = '&' if '?' in conn_base else '?'
+    db_string = f"{conn_base}{sep}sslrootcert={certifi.where()}"
     engine = create_engine(db_string)
 except KeyError:
     print("❌ ERROR: DB_CONNECTION_STRING missing."); sys.exit(1)
 
 def clean_address_ai(raw_addr):
-    if not isinstance(raw_addr, str) or len(raw_addr) < 5: return None, "Too Short"
-    if raw_addr.upper().startswith('PO BOX'): return None, "PO Box Filter"
+    if not isinstance(raw_addr, str) or len(raw_addr) < 5: return None
+    if raw_addr.upper().startswith('PO BOX'): return None
     try:
         raw_addr = raw_addr.upper().strip()
         raw_addr = re.sub(r'[^A-Z0-9 \-\#]', '', raw_addr)
@@ -36,8 +36,8 @@ def clean_address_ai(raw_addr):
         for key in ['AddressNumber', 'StreetName', 'StreetNamePostType', 'OccupancyType', 'OccupancyIdentifier']:
             if key in parsed: parts.append(parsed[key])
         clean_addr = " ".join(parts)
-        return (clean_addr, None) if len(clean_addr) > 3 else (None, "AI Parsing Failure")
-    except: return None, "AI Parsing Error"
+        return clean_addr if len(clean_addr) > 3 else None
+    except: return None
 
 def determine_type(row):
     if row['total_licenses'] > 1: return 'Commercial'
@@ -47,17 +47,13 @@ def determine_type(row):
 
 def main():
     print("🚀 STARTING: Texas API ETL Pipeline")
-    
-    # 📡 EXTRACT: Fetch from live TDLR Socrata API
     try:
         r = requests.get(TX_API_URL, timeout=120)
         r.raise_for_status()
         raw_df = pd.DataFrame(r.json())
         
-        # CLEANUP: Drop internal Socrata metadata columns containing nested dicts (resolves adaptation error)
+        # PREVENT CRASH: Drop nested metadata dicts and save everything as strings
         raw_df = raw_df.drop(columns=[c for c in raw_df.columns if 'computed_region' in c or '@' in c], errors='ignore')
-        
-        # 💾 RAW STAGE: Save everything messy as strings to ensure database compatibility
         raw_df.astype(str).to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
         initial_count = len(raw_df)
         print(f"📦 RAW STAGE COMPLETE: {initial_count} records saved to {RAW_TABLE}")
@@ -66,21 +62,14 @@ def main():
 
     # --- AUDIT & TRANSFORM STAGE ---
     df = raw_df.copy()
-    
-    # Map API lowercase keys to internal logic
     df['raw_address'] = (df['business_address_line1'].fillna('') + " " + df['business_address_line2'].fillna('')).str.strip()
-    
-    # 1. Address Cleaning
-    cleaned_data = df['raw_address'].apply(clean_address_ai)
-    df['address_clean'] = cleaned_data.apply(lambda x: x[0])
+    df['address_clean'] = df['raw_address'].apply(clean_address_ai)
     df_step2 = df.dropna(subset=['address_clean'])
     address_loss = initial_count - len(df_step2)
 
-    # 2. Missing City/Zip parsing from combined API field
     loc_parsed = df_step2['business_city_state_zip'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
     df_step2['city_clean'] = loc_parsed[0].str.strip()
     df_step2['zip_clean'] = df_step2['business_zip'].fillna(loc_parsed[1]).str[:5]
-    
     df_step3 = df_step2.dropna(subset=['city_clean', 'zip_clean']).copy()
     location_loss = len(df_step2) - len(df_step3)
 
@@ -88,7 +77,7 @@ def main():
     l_type = df_step3['license_type'].str.upper().fillna('')
     l_sub = df_step3['license_subtype'].str.upper().fillna('')
 
-    # 3. CATEGORIZATION: Handle overlaps (like 'MS') via dual check of Type + Subtype
+    # CATEGORIZATION: handles overlaps (like 'MS') via dual check
     df_step3['count_barber'] = ((l_type.str.contains('BARBER')) & (l_sub.isin(SUBTYPES['barber_people']))).astype(int)
     df_step3['count_cosmetologist'] = ((l_type.str.contains('COSMO')) & (l_sub.isin(SUBTYPES['cosmo_people']))).astype(int)
     df_step3['count_salon'] = ((l_type.str.contains('COSMO|ESTABLISHMENT|SALON')) & (l_sub.isin(SUBTYPES['cosmo_places']))).astype(int)
@@ -96,7 +85,7 @@ def main():
     df_step3['count_school'] = (l_sub.isin(SUBTYPES['schools'])).astype(int)
     df_step3['count_booth'] = (l_type.str.contains('BOOTH')).astype(int)
 
-    # 4. AGGREGATION & DEDUPLICATION BY LOCATION
+    # AGGREGATION
     grouped = df_step3.groupby(['address_clean', 'city_clean', 'zip_clean']).agg({
         'count_barber': 'sum', 'count_cosmetologist': 'sum', 'count_salon': 'sum',
         'count_barbershop': 'sum', 'count_school': 'sum', 'count_booth': 'sum'
@@ -106,7 +95,7 @@ def main():
     grouped['total_licenses'] = grouped[['count_barber', 'count_cosmetologist', 'count_salon', 'count_barbershop', 'count_school', 'count_booth']].sum(axis=1)
     grouped['address_type'] = grouped.apply(determine_type, axis=1)
 
-    # 💾 GOLD STAGE: Save deduplicated, cleaned data for mapping
+    # 💾 GOLD STAGE
     grouped.to_sql(GOLD_TABLE, engine, if_exists='replace', index=False,
                    dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
 
