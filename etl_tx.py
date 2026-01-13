@@ -1,12 +1,14 @@
-import os, sys, pandas as pd, re, certifi, usaddress, urllib3
+import os, sys, pandas as pd, requests, re, certifi, usaddress, urllib3
 from sqlalchemy import create_engine
 from sqlalchemy.types import Integer, Text
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # CONFIGURATION
+TX_API_URL = "https://data.texas.gov/resource/7358-krk7.json?$limit=100000"
 RAW_TABLE = "address_insights_tx_raw"
 GOLD_TABLE = "address_insights_tx_gold"
+
 SUBTYPE_MAP = {
     'practitioner_barber': ['BA', 'BT', 'MA', 'TE'],
     'practitioner_cosmo': ['FA', 'FI', 'HW', 'IN', 'MA', 'MI', 'OP', 'SH', 'WG', 'WI'],
@@ -38,28 +40,27 @@ def clean_address_ai(raw_addr):
     except: return None, "AI Parsing Error"
 
 def main():
-    print("🚀 STARTING: Texas ETL Audit Factory")
-    files = ['ltcosmos.csv', 'ltcosshp.csv', 'Ltcosscl.csv', 'Ltbarscl (1).csv', 'Ltcepcos.csv']
-    dfs = []
-    for f in files:
-        if os.path.exists(f):
-            dfs.append(pd.read_csv(f, dtype=str))
-        else: print(f"   ⚠️ File missing: {f}")
+    print("🚀 STARTING: Texas API ETL Audit Factory")
+    
+    # 📡 EXTRACT: Fetch from API
+    try:
+        r = requests.get(TX_API_URL, timeout=120)
+        r.raise_for_status()
+        raw_df = pd.DataFrame(r.json())
+    except Exception as e:
+        print(f"❌ API ERROR: {e}"); sys.exit(1)
 
-    if not dfs: sys.exit(1)
-    raw_df = pd.concat(dfs, ignore_index=True)
-
-    # 💾 RAW STAGE: Save all messy data
+    # 💾 RAW STAGE: Save everything messy first
     raw_df.to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
     initial_count = len(raw_df)
     print(f"📦 RAW STAGE COMPLETE: {initial_count} records saved to {RAW_TABLE}")
 
     # --- AUDIT & FILTER STAGE ---
     df = raw_df.copy()
-    df.columns = [c.strip().upper() for c in df.columns]
     
     # 1. Address Cleaning
-    df['raw_address'] = (df['BUSINESS ADDRESS-LINE1'].fillna('') + " " + df['BUSINESS ADDRESS-LINE2'].fillna('')).str.strip()
+    # Map API lowercase keys to logic
+    df['raw_address'] = (df['business_address_line1'].fillna('') + " " + df['business_address_line2'].fillna('')).str.strip()
     cleaned_data = df['raw_address'].apply(clean_address_ai)
     df['address_clean'] = cleaned_data.apply(lambda x: x[0])
     
@@ -67,15 +68,15 @@ def main():
     address_loss = initial_count - len(df_step2)
 
     # 2. Missing City/Zip Data
-    loc_parsed = df_step2['BUSINESS CITY, STATE ZIP'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
+    loc_parsed = df_step2['business_city_state_zip'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
     df_step2['city_clean'] = loc_parsed[0].str.strip()
-    df_step2['zip_clean'] = df_step2['BUSINESS ZIP'].fillna(loc_parsed[1]).str[:5]
+    df_step2['zip_clean'] = df_step2['business_zip'].fillna(loc_parsed[1]).str[:5]
     
     df_step3 = df_step2.dropna(subset=['city_clean', 'zip_clean'])
     location_loss = len(df_step2) - len(df_step3)
 
     # 3. Categorization
-    s = df_step3['LICENSE SUBTYPE'].str.strip()
+    s = df_step3['license_subtype'].str.strip().str.upper()
     df_step3['count_barber'] = s.isin(SUBTYPE_MAP['practitioner_barber']).astype(int)
     df_step3['count_cosmetologist'] = s.isin(SUBTYPE_MAP['practitioner_cosmo']).astype(int)
     df_step3['count_salon'] = s.isin(SUBTYPE_MAP['establishment_salon']).astype(int)
