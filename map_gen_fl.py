@@ -1,11 +1,4 @@
-import os
-import sys
-import pandas as pd
-import requests
-import io
-import time
-import certifi
-import urllib.parse
+import os, sys, pandas as pd, requests, io, time, certifi, urllib.parse
 from sqlalchemy import create_engine
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -15,18 +8,13 @@ CENSUS_CHUNK_SIZE = 5000
 MAX_CENSUS_WORKERS = 4  
 MAPBOX_ROW_LIMIT = 3000 
 MAX_MAPBOX_WORKERS = 10 
-# UPDATED: Standardized output filename for Florida
 OUTPUT_FILE = "Booksy_FL_Licenses.csv"
-
-# Florida Bounding Box
-FL_BOUNDS = {
-    'lat_min': 24.3, 'lat_max': 31.1,
-    'lon_min': -87.7, 'lon_max': -79.8
-}
+FL_BOUNDS = {'lat_min': 24.3, 'lat_max': 31.1, 'lon_min': -87.7, 'lon_max': -79.8}
 
 try:
     db_string_raw = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
     db_string = f"{db_string_raw}{'&' if '?' in db_string_raw else '?'}sslrootcert={certifi.where()}"
+    engine = create_engine(db_string)
 except KeyError:
     print("❌ ERROR: DB_CONNECTION_STRING missing."); sys.exit(1)
 
@@ -34,10 +22,10 @@ MAPBOX_KEY = os.environ.get('MAPBOX_ACCESS_TOKEN')
 
 def get_gold_data(engine):
     print("📥 DB: Fetching Florida Gold Data...")
-    # UPDATED: Pulling from the state-specific fl_gold table
     query = """
     SELECT address_clean, city_clean, state, zip_clean, total_licenses, 
-           count_barber, count_cosmetologist, count_salon, count_barbershop, count_owner, address_type
+           count_barber, count_cosmetologist, count_salon, count_barbershop, 
+           count_owner, count_school, address_type
     FROM address_insights_fl_gold
     WHERE address_clean IS NOT NULL AND state = 'FL'
     """
@@ -77,10 +65,8 @@ def geocode_mapbox_single(row):
     return row['id'], None, None
 
 def main():
-    engine = create_engine(db_string)
     df_gold = get_gold_data(engine)
     df_cache = get_geo_cache(engine)
-    
     join_keys = ['address_clean', 'city_clean', 'state', 'zip_clean']
     for col in join_keys:
         df_gold[col] = df_gold[col].astype(str).str.replace(r'\.0$', '', regex=True)
@@ -109,7 +95,6 @@ def main():
                         new_coords.append(res)
                         if len(new_coords) >= 500:
                             pd.DataFrame(new_coords).to_sql('geo_cache', engine, if_exists='append', index=False)
-                            print(f"   💾 Saved {len(new_coords)} rows to Cache.")
                             new_coords = []
         else:
             print(f"🐢 CENSUS MODE..."); chunks = []
@@ -124,25 +109,16 @@ def main():
                         if not m.empty:
                             res = futures[f].drop(columns=['lat', 'lon'], errors='ignore').merge(m, on='id', how='inner')
                             res[join_keys + ['lat', 'lon']].to_sql('geo_cache', engine, if_exists='append', index=False)
-                            print(f"   ✅ Batch {b_idx} saved ({len(m)} matches found).")
-                        else:
-                            print(f"   ⚠️ Batch {b_idx}: No matches found.")
-                    else:
-                        print(f"   ❌ Batch {b_idx}: Request Failed.")
         if new_coords: pd.DataFrame(new_coords).to_sql('geo_cache', engine, if_exists='append', index=False)
 
     final_cache = get_geo_cache(engine)
     for col in join_keys: final_cache[col] = final_cache[col].astype(str).str.replace(r'\.0$', '', regex=True)
     
-    # Spatial Filtering
     final_output = df_gold.merge(final_cache, on=join_keys, how='inner')
     final_output = final_output[
-        (final_output['lat'] >= FL_BOUNDS['lat_min']) & 
-        (final_output['lat'] <= FL_BOUNDS['lat_max']) & 
-        (final_output['lon'] >= FL_BOUNDS['lon_min']) & 
-        (final_output['lon'] <= FL_BOUNDS['lon_max'])
+        (final_output['lat'] >= FL_BOUNDS['lat_min']) & (final_output['lat'] <= FL_BOUNDS['lat_max']) & 
+        (final_output['lon'] >= FL_BOUNDS['lon_min']) & (final_output['lon'] <= FL_BOUNDS['lon_max'])
     ]
-    
     final_output.to_csv(OUTPUT_FILE, index=False)
     print(f"✅ SUCCESS: Spatially Filtered Florida Map Generated! ({len(final_output)} rows)")
 
