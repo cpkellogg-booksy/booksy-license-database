@@ -39,10 +39,14 @@ def clean_address_ai(raw_addr):
         return (clean_addr, None) if len(clean_addr) > 3 else (None, "AI Parsing Failure")
     except: return None, "AI Parsing Error"
 
+def determine_type(row):
+    if row['total_licenses'] > 1: return 'Commercial'
+    addr = str(row['address_clean'])
+    if any(x in addr for x in ['APT', 'UNIT', 'TRLR', 'LOT']): return 'Residential'
+    return 'Commercial'
+
 def main():
-    print("🚀 STARTING: Texas API ETL Audit Factory")
-    
-    # 📡 EXTRACT: Fetch from API
+    print("🚀 STARTING: Texas API ETL Pipeline")
     try:
         r = requests.get(TX_API_URL, timeout=120)
         r.raise_for_status()
@@ -50,16 +54,10 @@ def main():
     except Exception as e:
         print(f"❌ API ERROR: {e}"); sys.exit(1)
 
-    # 💾 RAW STAGE: Save everything messy first
     raw_df.to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
     initial_count = len(raw_df)
-    print(f"📦 RAW STAGE COMPLETE: {initial_count} records saved to {RAW_TABLE}")
 
-    # --- AUDIT & FILTER STAGE ---
     df = raw_df.copy()
-    
-    # 1. Address Cleaning
-    # Map API lowercase keys to logic
     df['raw_address'] = (df['business_address_line1'].fillna('') + " " + df['business_address_line2'].fillna('')).str.strip()
     cleaned_data = df['raw_address'].apply(clean_address_ai)
     df['address_clean'] = cleaned_data.apply(lambda x: x[0])
@@ -67,7 +65,6 @@ def main():
     df_step2 = df.dropna(subset=['address_clean'])
     address_loss = initial_count - len(df_step2)
 
-    # 2. Missing City/Zip Data
     loc_parsed = df_step2['business_city_state_zip'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
     df_step2['city_clean'] = loc_parsed[0].str.strip()
     df_step2['zip_clean'] = df_step2['business_zip'].fillna(loc_parsed[1]).str[:5]
@@ -75,7 +72,6 @@ def main():
     df_step3 = df_step2.dropna(subset=['city_clean', 'zip_clean'])
     location_loss = len(df_step2) - len(df_step3)
 
-    # 3. Categorization
     s = df_step3['license_subtype'].str.strip().str.upper()
     df_step3['count_barber'] = s.isin(SUBTYPE_MAP['practitioner_barber']).astype(int)
     df_step3['count_cosmetologist'] = s.isin(SUBTYPE_MAP['practitioner_cosmo']).astype(int)
@@ -90,9 +86,10 @@ def main():
     }).reset_index()
     grouped['state'] = 'TX'
     grouped['total_licenses'] = grouped[['count_barber', 'count_cosmetologist', 'count_salon', 'count_barbershop', 'count_school', 'count_booth']].sum(axis=1)
+    grouped['address_type'] = grouped.apply(determine_type, axis=1)
 
-    # 💾 GOLD STAGE
-    grouped.to_sql(GOLD_TABLE, engine, if_exists='replace', index=False)
+    grouped.to_sql(GOLD_TABLE, engine, if_exists='replace', index=False,
+                   dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
 
     print(f"\n--- TEXAS AUDIT REPORT ---")
     print(f"Total Raw Records:    {initial_count}")
