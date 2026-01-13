@@ -21,15 +21,10 @@ def main():
             print(f"   ⚠️ Warning: {file} not found. Skipping {state}.")
 
     if dfs:
-        # Concatenate all dataframes. Pandas automatically aligns columns.
-        combined = pd.concat(dfs, ignore_index=True)
-        
-        # Fill missing columns (e.g., Texas has no 'count_owner', FL has no 'count_booth') with 0
-        combined = combined.fillna(0)
-        
+        # Concatenate all dataframes and fill missing columns with 0
+        combined = pd.concat(dfs, ignore_index=True).fillna(0)
         combined.to_csv(OUTPUT_FILE, index=False)
         print(f"✅ SUCCESS: Combined file generated! ({len(combined)} rows)")
-        print(f"   Saved to: {OUTPUT_FILE}")
     else:
         print("❌ ERROR: No input files found to merge.")
 
