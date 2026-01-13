@@ -17,9 +17,9 @@ SUBTYPES = {
 }
 
 try:
-    conn_base = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
-    sep = '&' if '?' in conn_base else '?'
-    db_string = f"{conn_base}{sep}sslrootcert={certifi.where()}"
+    # Standardized database connection string logic
+    base_conn = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
+    db_string = f"{base_conn}{'&' if '?' in base_conn else '?'}sslrootcert={certifi.where()}"
     engine = create_engine(db_string)
 except KeyError:
     print("❌ ERROR: DB_CONNECTION_STRING missing."); sys.exit(1)
@@ -45,7 +45,7 @@ def determine_type(row):
     return 'Commercial'
 
 def main():
-    print("🚀 STARTING: Texas ETL Pipeline")
+    print("🚀 STARTING: Texas API ETL Pipeline")
     try:
         r = requests.get(TX_API_URL, timeout=120)
         r.raise_for_status()
@@ -53,7 +53,7 @@ def main():
     except Exception as e:
         print(f"❌ API ERROR: {e}"); sys.exit(1)
 
-    # 💾 RAW STAGE: Preserve messy data
+    # 💾 RAW STAGE: Save untouched messy data
     raw_df.to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
     initial_count = len(raw_df)
 
@@ -75,7 +75,7 @@ def main():
     l_type = df_step3['license_type'].str.upper().fillna('')
     l_sub = df_step3['license_subtype'].str.upper().fillna('')
 
-    # CATEGORIZATION
+    # CATEGORIZATION logic using Type + Subtype to handle duplicates (like 'MS')
     df_step3['count_barber'] = ((l_type.str.contains('BARBER')) & (l_sub.isin(SUBTYPES['barber_people']))).astype(int)
     df_step3['count_cosmetologist'] = ((l_type.str.contains('COSMO')) & (l_sub.isin(SUBTYPES['cosmo_people']))).astype(int)
     df_step3['count_salon'] = ((l_type.str.contains('COSMO|ESTABLISHMENT|SALON')) & (l_sub.isin(SUBTYPES['cosmo_places']))).astype(int)
