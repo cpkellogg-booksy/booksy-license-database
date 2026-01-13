@@ -1,4 +1,4 @@
-import os, sys, pandas as pd, requests, re, certifi, usaddress, numpy as np, io, zipfile, urllib3
+import os, sys, pandas as pd, requests, re, certifi, usaddress, numpy as np, io, urllib3
 from sqlalchemy import create_engine
 from sqlalchemy.types import Integer, Text
 
@@ -16,12 +16,6 @@ TDLR_URLS = {
 
 # Texas Comptroller - Active Sales Tax Permit Holders (Statewide, Free)
 COMPTROLLER_URL = "https://data.texas.gov/api/views/jrea-zgmq/rows.csv?accessType=DOWNLOAD"
-
-# Harris County Appraisal District (HCAD) Public Data Links
-HCAD_URLS = [
-    "https://download.hcad.org/data/CAMA/2025/Real_acct.zip",
-    "https://download.hcad.org/data/CAMA/2024/Real_acct.zip"
-]
 
 RAW_TABLE = "address_insights_tx_raw"
 GOLD_TABLE = "address_insights_tx_gold"
@@ -58,45 +52,6 @@ def determine_type(row):
     if any(x in addr for x in ['APT', 'UNIT', 'TRLR', 'LOT']): return 'Residential'
     return 'Commercial'
 
-def download_hcad_data(output_dir="external_data"):
-    """Downloads and extracts the Harris County Real Property file with robust headers."""
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    target_file = os.path.join(output_dir, "hcad_real_acct.txt")
-    if os.path.exists(target_file):
-        return target_file
-
-    print("   ⬇️ Downloading external HCAD Property Data...")
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-    
-    for url in HCAD_URLS:
-        try:
-            print(f"      Attempting: {url}")
-            r = requests.get(url, stream=True, verify=False, timeout=600, headers=headers)
-            if r.status_code == 200:
-                zip_path = os.path.join(output_dir, "temp_hcad.zip")
-                with open(zip_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                
-                print("      Extracting Real_acct.txt...")
-                try:
-                    with zipfile.ZipFile(zip_path, 'r') as z:
-                        candidates = [n for n in z.namelist() if 'Real_acct.txt' in n or 'real_acct.txt' in n]
-                        if candidates:
-                            with open(target_file, 'wb') as f_out:
-                                f_out.write(z.read(candidates[0]))
-                            print("      ✅ HCAD Data Extracted.")
-                            os.remove(zip_path)
-                            return target_file
-                except zipfile.BadZipFile:
-                    print("      ⚠️ Downloaded file was not a valid zip.")
-        except Exception as e:
-            print(f"      ⚠️ Failed to download {url}: {e}")
-    
-    return None
-
 def enrich_from_comptroller(df_target):
     """
     Downloads statewide Active Sales Tax Permit Holders to match Business Names to Physical Locations.
@@ -111,21 +66,26 @@ def enrich_from_comptroller(df_target):
 
     try:
         print("   ⬇️ Downloading Texas Active Sales Tax Permit Holders (Statewide)...")
+        # Stream download to avoid memory issues
         r = requests.get(COMPTROLLER_URL, stream=True, verify=False, timeout=600)
         
+        # Read only necessary columns: Taxpayer Name, Outlet Address info
         df_tax = pd.read_csv(io.BytesIO(r.content), 
                              usecols=['Taxpayer Name', 'Outlet Address', 'Outlet City', 'Outlet Zip Code'],
                              dtype=str, on_bad_lines='skip')
         
         print(f"   ... Loaded {len(df_tax)} Taxpayer Records. Indexing...")
         
+        # Normalize for matching
         df_tax['match_key'] = df_tax['Taxpayer Name'].str.strip().str.upper()
         df_target['match_key'] = df_target['BUSINESS NAME'].str.strip().str.upper()
         
+        # Deduplicate to create unique lookup
         tax_unique = df_tax.drop_duplicates(subset=['match_key'])
         tax_lookup = tax_unique.set_index('match_key')[['Outlet Address', 'Outlet City', 'Outlet Zip Code']].to_dict('index')
         
         def apply_tax_match(row):
+            # Only try if address is missing and we have a Business Name
             if pd.isnull(row['address_clean']) and pd.notnull(row['match_key']):
                 match = tax_lookup.get(row['match_key'])
                 if match:
@@ -136,9 +96,11 @@ def enrich_from_comptroller(df_target):
 
         enriched = df_target.apply(apply_tax_match, axis=1, result_type='expand')
         
+        # Update Main DataFrame
         updates = enriched[0].notnull()
         df_target.loc[updates, 'address_clean'] = enriched.loc[updates, 0]
         
+        # Update fallback columns
         if 'enriched_city' not in df_target.columns: df_target['enriched_city'] = np.nan
         if 'enriched_zip' not in df_target.columns: df_target['enriched_zip'] = np.nan
         
@@ -154,54 +116,11 @@ def enrich_from_comptroller(df_target):
     print(f"   ... Records missing address AFTER Comptroller match:  {new_missing}")
     return df_target
 
-def enrich_from_external_cad(df_target):
-    print("\n🔎 STARTING: External CAD Enrichment (Harris County)")
-    missing_mask = df_target['address_clean'].isnull()
-    missing_count = missing_mask.sum()
-    if missing_count == 0: return df_target
-
-    hcad_path = download_hcad_data()
-    
-    if hcad_path and os.path.exists(hcad_path):
-        try:
-            print("   ... Loading Harris County CAD data...")
-            df_cad = pd.read_csv(hcad_path, sep='\t', encoding='latin1', on_bad_lines='skip', low_memory=False)
-            
-            if 'owner_name' in df_cad.columns:
-                df_cad['match_key'] = df_cad['owner_name'].astype(str).str.replace(',', '').str.strip().str.upper()
-                df_target['match_key_practitioner'] = df_target['NAME'].astype(str).str.replace(',', '').str.strip().str.upper()
-                
-                cad_unique = df_cad.drop_duplicates(subset=['match_key'])
-                cad_lookup = cad_unique.set_index('match_key')[['site_addr_1', 'site_city', 'site_zip']].to_dict('index')
-                
-                def apply_cad(row):
-                    if pd.notnull(row['address_clean']): return None, None, None
-                    if 'HARRIS' in str(row['COUNTY']).upper():
-                        match = cad_lookup.get(row['match_key_practitioner'])
-                        if match: return match['site_addr_1'], match['site_city'], match['site_zip']
-                    return None, None, None
-
-                enriched = df_target.apply(apply_cad, axis=1, result_type='expand')
-                
-                updates = enriched[0].notnull()
-                df_target.loc[updates, 'address_clean'] = enriched.loc[updates, 0]
-                df_target.loc[updates, 'enriched_city'] = df_target.loc[updates, 'enriched_city'].fillna(enriched.loc[updates, 1])
-                df_target.loc[updates, 'enriched_zip'] = df_target.loc[updates, 'enriched_zip'].fillna(enriched.loc[updates, 2])
-                
-                print(f"   ✅ HCAD MATCHES FOUND: {updates.sum()}")
-            else:
-                print("   ⚠️ HCAD file columns could not be identified. Skipping.")
-        except Exception as e:
-            print(f"   ⚠️ Failed to process HCAD file: {e}")
-    else:
-        print("   ⚠️ External CAD file could not be retrieved. Skipping.")
-    
-    return df_target
-
 def main():
-    print("🚀 STARTING: Texas Direct CSV ETL Pipeline (Internal + Comptroller + CAD)")
+    print("🚀 STARTING: Texas Direct CSV ETL Pipeline (Internal + Comptroller)")
     all_dfs = []
     
+    # 1. EXTRACT
     for name, url in TDLR_URLS.items():
         try:
             print(f"   📥 Downloading: {name}...")
@@ -217,6 +136,7 @@ def main():
     raw_df.astype(str).to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
     initial_count = len(raw_df)
 
+    # 2. TRANSFORM
     df = raw_df.copy().replace('', np.nan)
     
     df['a1'] = df['BUSINESS ADDRESS-LINE1'].fillna(df['MAILING ADDRESS LINE1'])
@@ -228,7 +148,7 @@ def main():
     missing_before = df['address_clean'].isnull().sum()
     print(f"\n📊 AUDIT: Missing Addresses Baseline: {missing_before}")
 
-    # INTERNAL SKIP TRACE
+    # 3. INTERNAL SKIP TRACE
     print("\n🔎 STARTING: Internal Skip Trace")
     shops_df = df[df['source_file'].isin(['establishments', 'barber_schools', 'cosmo_schools'])].dropna(subset=['address_clean'])
     loc_p = shops_df['loc_combined'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
@@ -252,13 +172,10 @@ def main():
     
     print(f"   ✅ Internal Matches Found: {updates.sum()}")
 
-    # COMPTROLLER ENRICHMENT
+    # 4. COMPTROLLER ENRICHMENT
     df = enrich_from_comptroller(df)
 
-    # EXTERNAL CAD ENRICHMENT
-    df = enrich_from_external_cad(df)
-
-    # FINAL CLEANING
+    # 5. FINAL CLEANING
     df_step2 = df.dropna(subset=['address_clean']).copy()
     address_loss = initial_count - len(df_step2)
 
@@ -272,7 +189,7 @@ def main():
     
     df_step3 = df_step2.dropna(subset=['city_clean', 'zip_clean']).copy()
 
-    # CATEGORIZATION
+    # 6. CATEGORIZATION
     l_type = df_step3['LICENSE TYPE'].str.upper().fillna('')
     l_sub = df_step3['LICENSE SUBTYPE'].str.upper().fillna('')
 
@@ -283,7 +200,7 @@ def main():
     df_step3['count_school'] = (l_sub.isin(SUBTYPES['schools'])).astype(int)
     df_step3['count_booth'] = (l_type.str.contains('BOOTH')).astype(int)
 
-    # AGGREGATION
+    # 7. AGGREGATION & GOLD STAGE
     grouped = df_step3.groupby(['address_clean', 'city_clean', 'zip_clean']).agg({
         'count_barber': 'sum', 'count_cosmetologist': 'sum', 'count_salon': 'sum',
         'count_barbershop': 'sum', 'count_school': 'sum', 'count_booth': 'sum'
