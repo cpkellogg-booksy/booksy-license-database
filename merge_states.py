@@ -1,54 +1,31 @@
-name: Daily Data Refresh
-on:
-  schedule:
-    - cron: '0 8 * * *'
-  workflow_dispatch:
+import pandas as pd
+import os
 
-# --- THIS IS THE CRITICAL FIX ---
-permissions:
-  contents: write
-# -------------------------------
+# Configuration
+FILES = {
+    'FL': 'Booksy_FL_Licenses.csv',
+    'TX': 'Booksy_TX_Licenses.csv'
+}
+OUTPUT_FILE = 'Booksy_USA_Licenses.csv'
 
-jobs:
-  refresh:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-      - run: pip install pandas sqlalchemy psycopg2-binary sqlalchemy-cockroachdb certifi usaddress requests
-      
-      - name: Run Florida Pipeline
-        env:
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
-          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
-        run: |
-          python -u etl_fl.py
-          python -u map_gen_fl.py
-          
-      - name: Run Texas Pipeline
-        env:
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
-          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
-        run: |
-          python -u etl_tx.py
-          python -u map_gen_tx.py
+def main():
+    print("🚀 STARTING: Merging State Data...")
+    dfs = []
+    
+    for state, file in FILES.items():
+        if os.path.exists(file):
+            print(f"   ... Loading {state} data from {file}")
+            df = pd.read_csv(file)
+            dfs.append(df)
+        else:
+            print(f"   ⚠️ Warning: {file} not found. Skipping {state}.")
 
-      # Generates the single combined file
-      - name: Merge States
-        run: python merge_states.py
-          
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./
-          keep_files: true
-          destination_dir: data
-          
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Booksy_License_Data_Full
-          path: Booksy_*.csv
-          retention-days: 5
+    if dfs:
+        # Concatenate all dataframes and fill missing columns with 0
+        combined = pd.concat(dfs, ignore_index=True).fillna(0)
+        combined.to_csv(OUTPUT_FILE, index=False)
+        print(f"✅ SUCCESS: Combined file generated! ({len(combined)} rows)")
+    else:
+        print("❌ ERROR: No input files found to merge.")
+
+if __name__ == "__main__": main()
