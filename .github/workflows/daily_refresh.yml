@@ -3,6 +3,10 @@ on:
   schedule:
     - cron: '0 8 * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -28,14 +32,17 @@ jobs:
         run: |
           python -u etl_tx.py
           python -u map_gen_tx.py
+
+      # NEW: Merge States into One File
+      - name: Merge States
+        run: python merge_states.py
           
-      # NEW STEP: Deploy CSVs to GitHub Pages
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./
-          keep_files: true  # Prevents deleting existing files if needed
+          keep_files: true
           destination_dir: data
           
       - uses: actions/upload-artifact@v4
