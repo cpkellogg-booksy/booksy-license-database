@@ -1,8 +1,6 @@
-import os, sys, pandas as pd, requests, re, certifi, usaddress, urllib3
+import os, sys, pandas as pd, requests, re, certifi, usaddress
 from sqlalchemy import create_engine
 from sqlalchemy.types import Integer, Text
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # CONFIGURATION
 TX_API_URL = "https://data.texas.gov/resource/7358-krk7.json?$limit=100000"
@@ -19,9 +17,14 @@ SUBTYPE_MAP = {
 }
 
 try:
-    # FIXED: Standardized connection string logic
-    db_string = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
-    db_string = f"{db_string}{'&' if '?' in db_string else '?'}sslrootcert={certifi.where()}"
+    # Get the base string and fix the protocol for CockroachDB compatibility
+    conn_base = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
+    
+    # Check for existing parameters to use the correct separator
+    separator = '&' if '?' in conn_base else '?'
+    
+    # Apply the SSL certificate bundle for secure connection
+    db_string = f"{conn_base}{separator}sslrootcert={certifi.where()}"
     engine = create_engine(db_string)
 except KeyError:
     print("❌ ERROR: DB_CONNECTION_STRING missing."); sys.exit(1)
@@ -48,6 +51,8 @@ def determine_type(row):
 
 def main():
     print("🚀 STARTING: Texas API ETL Pipeline")
+    
+    # 📡 EXTRACT: Fetch from live TDLR Socrata API
     try:
         r = requests.get(TX_API_URL, timeout=120)
         r.raise_for_status()
@@ -55,12 +60,16 @@ def main():
     except Exception as e:
         print(f"❌ API ERROR: {e}"); sys.exit(1)
 
-    # RAW STAGE
+    # 💾 RAW STAGE: Save untouched messy data for audit trail
     raw_df.to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
     initial_count = len(raw_df)
+    print(f"📦 RAW STAGE COMPLETE: {initial_count} records saved to {RAW_TABLE}")
 
-    # AUDIT & FILTER STAGE
+    # --- AUDIT & FILTER STAGE ---
     df = raw_df.copy()
+    
+    # 1. Address Cleaning
+    # TDLR API uses lowercase snake_case keys
     df['raw_address'] = (df['business_address_line1'].fillna('') + " " + df['business_address_line2'].fillna('')).str.strip()
     cleaned_data = df['raw_address'].apply(clean_address_ai)
     df['address_clean'] = cleaned_data.apply(lambda x: x[0])
@@ -68,6 +77,7 @@ def main():
     df_step2 = df.dropna(subset=['address_clean'])
     address_loss = initial_count - len(df_step2)
 
+    # 2. Missing City/Zip Data parsing from combined API field
     loc_parsed = df_step2['business_city_state_zip'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
     df_step2['city_clean'] = loc_parsed[0].str.strip()
     df_step2['zip_clean'] = df_step2['business_zip'].fillna(loc_parsed[1]).str[:5]
@@ -75,7 +85,7 @@ def main():
     df_step3 = df_step2.dropna(subset=['city_clean', 'zip_clean'])
     location_loss = len(df_step2) - len(df_step3)
 
-    # CATEGORIZATION
+    # 3. Categorization based on SUBTYPE_MAP
     s = df_step3['license_subtype'].str.strip().str.upper()
     df_step3['count_barber'] = s.isin(SUBTYPE_MAP['practitioner_barber']).astype(int)
     df_step3['count_cosmetologist'] = s.isin(SUBTYPE_MAP['practitioner_cosmo']).astype(int)
@@ -84,15 +94,17 @@ def main():
     df_step3['count_school'] = s.isin(SUBTYPE_MAP['school']).astype(int)
     df_step3['count_booth'] = s.isin(SUBTYPE_MAP['booth_rental']).astype(int)
 
+    # Aggregate by Physical Location
     grouped = df_step3.groupby(['address_clean', 'city_clean', 'zip_clean']).agg({
         'count_barber': 'sum', 'count_cosmetologist': 'sum', 'count_salon': 'sum',
         'count_barbershop': 'sum', 'count_school': 'sum', 'count_booth': 'sum'
     }).reset_index()
+    
     grouped['state'] = 'TX'
     grouped['total_licenses'] = grouped[['count_barber', 'count_cosmetologist', 'count_salon', 'count_barbershop', 'count_school', 'count_booth']].sum(axis=1)
     grouped['address_type'] = grouped.apply(determine_type, axis=1)
 
-    # GOLD STAGE
+    # 💾 GOLD STAGE: Final cleaned data for mapping
     grouped.to_sql(GOLD_TABLE, engine, if_exists='replace', index=False,
                    dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
 
