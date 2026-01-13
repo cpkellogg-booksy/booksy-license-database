@@ -33,7 +33,7 @@ jobs:
           python -u etl_tx.py
           python -u map_gen_tx.py
 
-      # NEW: Merge States into One File
+      # THIS IS THE MISSING STEP
       - name: Merge States
         run: python merge_states.py
           
