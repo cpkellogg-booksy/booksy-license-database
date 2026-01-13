@@ -71,7 +71,7 @@ def main():
     cleaned_data = df_step2['raw_address'].apply(clean_address_ai)
     df_step2['address_clean'] = cleaned_data.apply(lambda x: x[0])
     
-    # FIXED: Added .copy() here to stop repeated warnings
+    # FIXED: Added .copy() here to prevent repeated SettingWithCopyWarning
     df_step3 = df_step2.dropna(subset=['address_clean']).copy()
     address_loss = len(df_step2) - len(df_step3)
 
