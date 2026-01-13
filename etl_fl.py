@@ -18,7 +18,7 @@ except KeyError:
     print("❌ ERROR: DB_CONNECTION_STRING missing."); sys.exit(1)
 
 def clean_address_ai(raw_addr):
-    if not isinstance(raw_addr, str) or len(raw_addr) < 3: return None, "Too Short"
+    if not isinstance(raw_addr, str) or len(raw_addr.strip()) < 3: return None, "Too Short"
     if raw_addr.upper().startswith('PO BOX'): return None, "PO Box Filter"
     
     clean_val = re.sub(r'[^A-Z0-9 \-\#]', '', raw_addr.upper().strip())
@@ -70,7 +70,7 @@ def main():
     cleaned_results = df_step2['raw_address'].apply(clean_address_ai)
     df_step2['address_clean'] = cleaned_results.apply(lambda x: x[0] if x else None)
     
-    # FIXED: Added .copy() here to stop repeated warnings
+    # FIXED: Added .copy() here to prevent repeated SettingWithCopyWarning
     df_step3 = df_step2.dropna(subset=['address_clean']).copy()
     address_loss = len(df_step2) - len(df_step3)
 
@@ -98,6 +98,7 @@ def main():
                    dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
 
     print(f"\n--- FLORIDA AUDIT REPORT ---")
+    # FIXED: Added f"" wrapper below
     print(f"Initial Raw Records:    {initial_count}")
     print(f"Removed (Inactive/S): {status_loss}")
     print(f"Removed (PO Box/Bad): {address_loss}")
