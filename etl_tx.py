@@ -7,6 +7,7 @@ TX_API_URL = "https://data.texas.gov/resource/7358-krk7.json?$limit=100000"
 RAW_TABLE = "address_insights_tx_raw"
 GOLD_TABLE = "address_insights_tx_gold"
 
+# Unified Subtype Lists validated against TDLR example data
 SUBTYPES = {
     'barber_people': ['BA', 'BT', 'TE', 'BR', 'MR'],
     'barber_places': ['BS', 'DS', 'MS'],
@@ -16,6 +17,7 @@ SUBTYPES = {
 }
 
 try:
+    # Standardized database connection string logic
     base_conn = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
     sep = '&' if '?' in base_conn else '?'
     db_string = f"{base_conn}{sep}sslrootcert={certifi.where()}"
@@ -45,25 +47,35 @@ def determine_type(row):
 
 def main():
     print("🚀 STARTING: Texas API ETL Pipeline")
+    
+    # 📡 EXTRACT: Fetch from live TDLR Socrata API
     try:
         r = requests.get(TX_API_URL, timeout=120)
         r.raise_for_status()
         raw_df = pd.DataFrame(r.json())
+        
+        # CLEANUP: Drop internal metadata and nested dicts
         raw_df = raw_df.drop(columns=[c for c in raw_df.columns if 'computed_region' in c or '@' in c], errors='ignore')
+        
+        # 💾 RAW STAGE: Save untouched messy data
         raw_df.astype(str).to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
         initial_count = len(raw_df)
+        print(f"📦 RAW STAGE COMPLETE: {initial_count} records saved to {RAW_TABLE}")
     except Exception as e:
         print(f"❌ ERROR: {e}"); sys.exit(1)
 
+    # --- AUDIT & TRANSFORM STAGE ---
     df = raw_df.copy()
     df['raw_address'] = (df['business_address_line1'].fillna('') + " " + df['business_address_line2'].fillna('')).str.strip()
-    df['address_clean'] = df['raw_address'].apply(clean_address_ai)
-    df_step2 = df.dropna(subset=['address_clean']).copy() # ADDED .copy()
+    
+    cleaned_data = df['raw_address'].apply(clean_address_ai)
+    df['address_clean'] = cleaned_data.apply(lambda x: x[0]) if isinstance(cleaned_data, pd.Series) else cleaned_data
+    df_step2 = df.dropna(subset=['address_clean']).copy()
     address_loss = initial_count - len(df_step2)
 
+    # Parse location from combined field (fixes KeyError: business_zip)
     loc_parsed = df_step2['business_city_state_zip'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
     df_step2['city_clean'] = loc_parsed[0].str.strip()
-    # FIXED: Replaced call to non-existent 'business_zip' with extracted data from regex
     df_step2['zip_clean'] = loc_parsed[1].str[:5]
     
     df_step3 = df_step2.dropna(subset=['city_clean', 'zip_clean']).copy()
@@ -72,6 +84,7 @@ def main():
     l_type = df_step3['license_type'].str.upper().fillna('')
     l_sub = df_step3['license_subtype'].str.upper().fillna('')
 
+    # CATEGORIZATION logic handling overlaps via dual check
     df_step3['count_barber'] = ((l_type.str.contains('BARBER')) & (l_sub.isin(SUBTYPES['barber_people']))).astype(int)
     df_step3['count_cosmetologist'] = ((l_type.str.contains('COSMO')) & (l_sub.isin(SUBTYPES['cosmo_people']))).astype(int)
     df_step3['count_salon'] = ((l_type.str.contains('COSMO|ESTABLISHMENT|SALON')) & (l_sub.isin(SUBTYPES['cosmo_places']))).astype(int)
@@ -79,6 +92,7 @@ def main():
     df_step3['count_school'] = (l_sub.isin(SUBTYPES['schools'])).astype(int)
     df_step3['count_booth'] = (l_type.str.contains('BOOTH')).astype(int)
 
+    # AGGREGATION
     grouped = df_step3.groupby(['address_clean', 'city_clean', 'zip_clean']).agg({
         'count_barber': 'sum', 'count_cosmetologist': 'sum', 'count_salon': 'sum',
         'count_barbershop': 'sum', 'count_school': 'sum', 'count_booth': 'sum'
@@ -88,6 +102,7 @@ def main():
     grouped['total_licenses'] = grouped[['count_barber', 'count_cosmetologist', 'count_salon', 'count_barbershop', 'count_school', 'count_booth']].sum(axis=1)
     grouped['address_type'] = grouped.apply(determine_type, axis=1)
 
+    # 💾 GOLD STAGE
     grouped.to_sql(GOLD_TABLE, engine, if_exists='replace', index=False,
                    dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
 
