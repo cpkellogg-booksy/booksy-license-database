@@ -54,7 +54,7 @@ def determine_type(row):
 
 def enrich_from_comptroller(df_target):
     """
-    Downloads statewide Active Sales Tax Permit Holders to match Business Names to Physical Locations.
+    Downloads statewide Active Sales Tax Permit Holders to match Practitioner Names to Physical Locations.
     """
     print("\n🔎 STARTING: Statewide Comptroller Enrichment (Sales Tax Permits)")
     missing_mask = df_target['address_clean'].isnull()
@@ -76,16 +76,19 @@ def enrich_from_comptroller(df_target):
         
         print(f"   ... Loaded {len(df_tax)} Taxpayer Records. Indexing...")
         
-        # Normalize for matching
+        # Normalize Taxpayer Name (Remove extra spaces)
         df_tax['match_key'] = df_tax['Taxpayer Name'].str.strip().str.upper()
-        df_target['match_key'] = df_target['BUSINESS NAME'].str.strip().str.upper()
+        
+        # Normalize Practitioner Name: "SMITH, JOHN" -> "SMITH JOHN"
+        # We remove the comma to align with typical Taxpayer Name formats
+        df_target['match_key'] = df_target['NAME'].astype(str).str.replace(',', '', regex=False).str.strip().str.upper()
         
         # Deduplicate to create unique lookup
         tax_unique = df_tax.drop_duplicates(subset=['match_key'])
         tax_lookup = tax_unique.set_index('match_key')[['Outlet Address', 'Outlet City', 'Outlet Zip Code']].to_dict('index')
         
         def apply_tax_match(row):
-            # Only try if address is missing and we have a Business Name
+            # Only try if address is missing
             if pd.isnull(row['address_clean']) and pd.notnull(row['match_key']):
                 match = tax_lookup.get(row['match_key'])
                 if match:
