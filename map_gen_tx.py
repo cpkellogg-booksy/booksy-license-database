@@ -12,9 +12,8 @@ OUTPUT_FILE = "Booksy_TX_Licenses.csv"
 TX_BOUNDS = {'lat_min': 25.8, 'lat_max': 36.5, 'lon_min': -106.6, 'lon_max': -93.5}
 
 try:
-    conn_base = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
-    sep = '&' if '?' in conn_base else '?'
-    db_string = f"{conn_base}{sep}sslrootcert={certifi.where()}"
+    db_string_raw = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
+    db_string = f"{db_string_raw}{'&' if '?' in db_string_raw else '?'}sslrootcert={certifi.where()}"
     engine = create_engine(db_string)
 except KeyError:
     print("❌ ERROR: DB_CONNECTION_STRING missing."); sys.exit(1)
@@ -82,15 +81,18 @@ def main():
     if not to_geocode.empty:
         new_coords = []
         if MAPBOX_KEY and len(to_geocode) <= MAPBOX_ROW_LIMIT:
-            print(f"⚡ MAPBOX MODE..."); completed = 0
-            with ThreadPoolExecutor(max_workers=MAX_MAPBOX_WORKERS) as ex:
+            print(f"⚡ MAPBOX MODE..."); workers = MAX_MAPBOX_WORKERS
+            completed = 0
+            with ThreadPoolExecutor(max_workers=workers) as ex:
                 futures = {ex.submit(geocode_mapbox_single, r): r for r in to_geocode.to_dict('records')}
                 for f in as_completed(futures):
-                    rid, lat, lon = f.result(); completed += 1
+                    rid, lat, lon = f.result()
+                    completed += 1
                     if completed % 100 == 0: print(f"   ... processed {completed}/{len(to_geocode)}")
                     if lat:
                         orig = futures[f]
-                        new_coords.append({**{k: orig[k] for k in join_keys}, 'lat': lat, 'lon': lon})
+                        res = {k: orig[k] for k in join_keys}; res['lat'] = lat; res['lon'] = lon
+                        new_coords.append(res)
                         if len(new_coords) >= 500:
                             pd.DataFrame(new_coords).to_sql('geo_cache', engine, if_exists='append', index=False)
                             new_coords = []
