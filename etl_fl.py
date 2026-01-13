@@ -98,7 +98,7 @@ def main():
                    dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
 
     print(f"\n--- FLORIDA AUDIT REPORT ---")
-    print(Initial Raw Records:    {initial_count}")
+    print(f"Initial Raw Records:    {initial_count}")
     print(f"Removed (Inactive/S): {status_loss}")
     print(f"Removed (PO Box/Bad): {address_loss}")
     print(f"Final Gold Locations: {len(grouped)}")
