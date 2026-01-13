@@ -9,7 +9,12 @@ MAX_CENSUS_WORKERS = 4
 MAPBOX_ROW_LIMIT = 3000 
 MAX_MAPBOX_WORKERS = 10 
 OUTPUT_FILE = "Booksy_FL_Licenses.csv"
-FL_BOUNDS = {'lat_min': 24.3, 'lat_max': 31.1, 'lon_min': -87.7, 'lon_max': -79.8}
+
+# Florida Bounding Box
+FL_BOUNDS = {
+    'lat_min': 24.3, 'lat_max': 31.1,
+    'lon_min': -87.7, 'lon_max': -79.8
+}
 
 try:
     db_string_raw = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
@@ -67,6 +72,7 @@ def geocode_mapbox_single(row):
 def main():
     df_gold = get_gold_data(engine)
     df_cache = get_geo_cache(engine)
+    
     join_keys = ['address_clean', 'city_clean', 'state', 'zip_clean']
     for col in join_keys:
         df_gold[col] = df_gold[col].astype(str).str.replace(r'\.0$', '', regex=True)
