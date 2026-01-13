@@ -15,7 +15,6 @@ TDLR_URLS = {
 }
 
 # Harris County Appraisal District (HCAD) Public Data Links
-# Tries 2025 first, falls back to 2024 if 2025 isn't published yet
 HCAD_URLS = [
     "https://download.hcad.org/data/CAMA/2025/Real_acct.zip",
     "https://download.hcad.org/data/CAMA/2024/Real_acct.zip"
@@ -57,7 +56,7 @@ def determine_type(row):
     return 'Commercial'
 
 def download_hcad_data(output_dir="external_data"):
-    """Downloads and extracts the Harris County Real Property file."""
+    """Downloads and extracts the Harris County Real Property file with robust headers."""
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
@@ -65,11 +64,13 @@ def download_hcad_data(output_dir="external_data"):
     if os.path.exists(target_file):
         return target_file
 
-    print("   ⬇️ Downloading external HCAD Property Data (this may take time)...")
+    print("   ⬇️ Downloading external HCAD Property Data...")
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    
     for url in HCAD_URLS:
         try:
             print(f"      Attempting: {url}")
-            r = requests.get(url, stream=True, verify=False, timeout=300)
+            r = requests.get(url, stream=True, verify=False, timeout=600, headers=headers)
             if r.status_code == 200:
                 zip_path = os.path.join(output_dir, "temp_hcad.zip")
                 with open(zip_path, 'wb') as f:
@@ -77,15 +78,18 @@ def download_hcad_data(output_dir="external_data"):
                         f.write(chunk)
                 
                 print("      Extracting Real_acct.txt...")
-                with zipfile.ZipFile(zip_path, 'r') as z:
-                    # HCAD file inside zip is usually 'Real_acct.txt'
-                    file_name = [n for n in z.namelist() if 'Real_acct.txt' in n][0]
-                    with open(target_file, 'wb') as f_out:
-                        f_out.write(z.read(file_name))
-                
-                os.remove(zip_path)
-                print("      ✅ HCAD Data Downloaded Successfully.")
-                return target_file
+                try:
+                    with zipfile.ZipFile(zip_path, 'r') as z:
+                        # Find the correct text file inside
+                        candidates = [n for n in z.namelist() if 'Real_acct.txt' in n or 'real_acct.txt' in n]
+                        if candidates:
+                            with open(target_file, 'wb') as f_out:
+                                f_out.write(z.read(candidates[0]))
+                            print("      ✅ HCAD Data Extracted.")
+                            os.remove(zip_path)
+                            return target_file
+                except zipfile.BadZipFile:
+                    print("      ⚠️ Downloaded file was not a valid zip.")
         except Exception as e:
             print(f"      ⚠️ Failed to download {url}: {e}")
     
@@ -100,55 +104,42 @@ def enrich_from_external_cad(df_target):
     if missing_count == 0:
         return df_target
 
-    # Attempt to download if missing
     hcad_path = download_hcad_data()
-    external_matches = 0
     
     if hcad_path and os.path.exists(hcad_path):
         try:
             print("   ... Loading Harris County CAD data...")
-            # HCAD Real_acct.txt usually has: 
-            # col 0: Account, col 14: Site Addr 1, col 18: Site City, col 19: Site Zip, col 23: Owner Name?
-            # We will use 'error_bad_lines' false to be safe, assuming tab delimiter based on HCAD docs
-            # NOTE: Column names vary by year. We map by common index or header if available.
-            # Using standard pandas parsing with latin1
-            df_cad = pd.read_csv(hcad_path, sep='\t', encoding='latin1', low_memory=False, on_bad_lines='skip')
+            # HCAD 2024/2025 Format: Tab separated. 
+            # We need col 4 (Owner Name), 15 (Site Addr 1), 19 (Site City), 20 (Site Zip) - approximation
+            # Safer to read with on_bad_lines='skip' and no header if names aren't standard
+            df_cad = pd.read_csv(hcad_path, sep='\t', encoding='latin1', on_bad_lines='skip', low_memory=False)
             
-            # Identify columns dynamically if possible, or use standard HCAD names
-            # Standard names: 'site_addr_1', 'site_city', 'site_zip', 'owner_name'
-            # If names differ, we rename. For now, we assume headers exist.
-            
-            # Normalize for matching
-            if 'owner_name' in df_cad.columns and 'site_addr_1' in df_cad.columns:
+            # Normalize column names if possible, otherwise use indices
+            # For this version, we will try to match based on standard HCAD headers
+            if 'owner_name' in df_cad.columns:
                 df_cad['match_key'] = df_cad['owner_name'].astype(str).str.replace(',', '').str.strip().str.upper()
                 df_target['match_key'] = df_target['NAME'].astype(str).str.replace(',', '').str.strip().str.upper()
                 
-                # Deduplicate CAD on owner name to prevent index errors
                 cad_unique = df_cad.drop_duplicates(subset=['match_key'])
                 cad_lookup = cad_unique.set_index('match_key')[['site_addr_1', 'site_city', 'site_zip']].to_dict('index')
                 
                 def apply_cad(row):
-                    if pd.notnull(row['address_clean']): 
-                        return row['address_clean'], row['city_clean'], row['zip_clean']
-                    
+                    if pd.notnull(row['address_clean']): return row['address_clean'], None, None
                     if 'HARRIS' in str(row['COUNTY']).upper():
                         match = cad_lookup.get(row['match_key'])
-                        if match:
-                            return match['site_addr_1'], match['site_city'], match['site_zip']
+                        if match: return match['site_addr_1'], match['site_city'], match['site_zip']
                     return None, None, None
 
                 enriched = df_target.apply(apply_cad, axis=1, result_type='expand')
                 
                 updates = enriched[0].notnull() & df_target['address_clean'].isnull()
                 df_target.loc[updates, 'address_clean'] = enriched.loc[updates, 0]
-                # Fill enriched city/zip
                 df_target.loc[updates, 'enriched_city'] = enriched.loc[updates, 1]
                 df_target.loc[updates, 'enriched_zip'] = enriched.loc[updates, 2]
                 
-                external_matches = updates.sum()
-                print(f"   ✅ HCAD MATCHES FOUND: {external_matches}")
+                print(f"   ✅ HCAD MATCHES FOUND: {updates.sum()}")
             else:
-                print("   ⚠️ HCAD file columns mismatch. Skipping.")
+                print("   ⚠️ HCAD file columns could not be identified. Skipping.")
             
         except Exception as e:
             print(f"   ⚠️ Failed to process HCAD file: {e}")
@@ -179,22 +170,20 @@ def main():
     raw_df.astype(str).to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
     initial_count = len(raw_df)
 
-    # 2. TRANSFORM & STANDARDIZE
+    # 2. TRANSFORM
     df = raw_df.copy().replace('', np.nan)
-    
     df['a1'] = df['BUSINESS ADDRESS-LINE1'].fillna(df['MAILING ADDRESS LINE1'])
     df['a2'] = df['BUSINESS ADDRESS-LINE2'].fillna(df['MAILING ADDRESS LINE2'])
     df['loc_combined'] = df['BUSINESS CITY, STATE ZIP'].fillna(df['MAILING ADDRESS CITY, STATE ZIP'])
     df['raw_address'] = (df['a1'].fillna('').astype(str) + " " + df['a2'].fillna('').astype(str)).str.strip()
     df['address_clean'] = df['raw_address'].apply(clean_address_ai)
 
-    missing_before_internal = df['address_clean'].isnull().sum()
-    print(f"\n📊 AUDIT: Missing Addresses Baseline: {missing_before_internal}")
+    missing_before = df['address_clean'].isnull().sum()
+    print(f"\n📊 AUDIT: Missing Addresses Baseline: {missing_before}")
 
-    # 3. INTERNAL SKIP TRACING (Shop Lookup)
-    print("\n🔎 STARTING: Internal Skip Trace (Shop Name Matching)")
+    # 3. INTERNAL SKIP TRACE
+    print("\n🔎 STARTING: Internal Skip Trace")
     shops_df = df[df['source_file'].isin(['establishments', 'barber_schools', 'cosmo_schools'])].dropna(subset=['address_clean'])
-    
     loc_p = shops_df['loc_combined'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
     shops_df['city_match'] = loc_p[0].str.strip()
     shops_df['zip_match'] = loc_p[1].str[:5]
@@ -209,17 +198,14 @@ def main():
         return None, None, None
 
     enriched = df.apply(enrich_internal, axis=1, result_type='expand')
-    
-    updates_mask = enriched[0].notnull() & df['address_clean'].isnull()
-    df.loc[updates_mask, 'address_clean'] = enriched.loc[updates_mask, 0]
+    updates = enriched[0].notnull() & df['address_clean'].isnull()
+    df.loc[updates, 'address_clean'] = enriched.loc[updates, 0]
     df['enriched_city'] = enriched[1]
     df['enriched_zip'] = enriched[2]
     
-    internal_matches = updates_mask.sum()
-    print(f"   ✅ Internal Matches Found: {internal_matches}")
-    print(f"   ... Missing after Internal: {df['address_clean'].isnull().sum()}")
+    print(f"   ✅ Internal Matches Found: {updates.sum()}")
 
-    # 4. EXTERNAL SKIP TRACING
+    # 4. EXTERNAL SKIP TRACE
     df = enrich_from_external_cad(df)
 
     # 5. FINAL CLEANING
@@ -227,7 +213,6 @@ def main():
     address_loss = initial_count - len(df_step2)
 
     loc_parsed = df_step2['loc_combined'].str.extract(r'(.*?)\s*,?\s*TX\s*(\d{5})')
-    # Fill missing city/zip with enriched data if available
     if 'enriched_city' in df_step2.columns:
         df_step2['city_clean'] = loc_parsed[0].str.strip().fillna(df_step2['enriched_city'])
         df_step2['zip_clean'] = loc_parsed[1].str[:5].fillna(df_step2['enriched_zip'])
@@ -236,7 +221,6 @@ def main():
         df_step2['zip_clean'] = loc_parsed[1].str[:5]
     
     df_step3 = df_step2.dropna(subset=['city_clean', 'zip_clean']).copy()
-    location_loss = len(df_step2) - len(df_step3)
 
     # 6. CATEGORIZATION
     l_type = df_step3['LICENSE TYPE'].str.upper().fillna('')
@@ -265,7 +249,6 @@ def main():
 
     print(f"\n--- FINAL TEXAS AUDIT REPORT ---")
     print(f"Total Raw Records:        {initial_count}")
-    print(f"Recovered Internal:       {internal_matches}")
     print(f"Removed (Still No Addr):  {address_loss}")
     print(f"Final Gold Locations:     {len(grouped)}")
     print(f"-------------------------------\n")
