@@ -20,7 +20,7 @@ SUBTYPE_MAP = {
 
 try:
     db_string = os.environ['DB_CONNECTION_STRING'].replace("postgresql://", "cockroachdb://")
-    db_string = f"{db_string}{'&' if '?' in db_string else '?'}sslrootcert={certifi.where()}"
+    db_string = f"{db_string}{'&' if '?' in db_string_raw else '?'}sslrootcert={certifi.where()}"
     engine = create_engine(db_string)
 except KeyError:
     print("❌ ERROR: DB_CONNECTION_STRING missing."); sys.exit(1)
@@ -54,9 +54,11 @@ def main():
     except Exception as e:
         print(f"❌ API ERROR: {e}"); sys.exit(1)
 
+    # RAW STAGE
     raw_df.to_sql(RAW_TABLE, engine, if_exists='replace', index=False)
     initial_count = len(raw_df)
 
+    # AUDIT & FILTER STAGE
     df = raw_df.copy()
     df['raw_address'] = (df['business_address_line1'].fillna('') + " " + df['business_address_line2'].fillna('')).str.strip()
     cleaned_data = df['raw_address'].apply(clean_address_ai)
@@ -72,6 +74,7 @@ def main():
     df_step3 = df_step2.dropna(subset=['city_clean', 'zip_clean'])
     location_loss = len(df_step2) - len(df_step3)
 
+    # CATEGORIZATION
     s = df_step3['license_subtype'].str.strip().str.upper()
     df_step3['count_barber'] = s.isin(SUBTYPE_MAP['practitioner_barber']).astype(int)
     df_step3['count_cosmetologist'] = s.isin(SUBTYPE_MAP['practitioner_cosmo']).astype(int)
@@ -88,6 +91,7 @@ def main():
     grouped['total_licenses'] = grouped[['count_barber', 'count_cosmetologist', 'count_salon', 'count_barbershop', 'count_school', 'count_booth']].sum(axis=1)
     grouped['address_type'] = grouped.apply(determine_type, axis=1)
 
+    # GOLD STAGE
     grouped.to_sql(GOLD_TABLE, engine, if_exists='replace', index=False,
                    dtype={'address_clean': Text, 'city_clean': Text, 'total_licenses': Integer})
 
