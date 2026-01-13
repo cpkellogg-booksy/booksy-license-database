@@ -1,48 +1,41 @@
-# Booksy License Database (ETL & Mapping Pipeline)
+# Booksy License Database (Multistate ETL & Mapping)
 
-This repository hosts a "headless" ETL (Extract, Transform, Load) pipeline that automatically aggregates professional license data. It currently pulls **Florida** Cosmetology and Barber licenses, cleans the addresses using AI, segments them into Commercial vs. Residential locations, and generates an interactive map file.
-
-The system is designed to be **free, open-source, and scalable**, running entirely on GitHub Actions and CockroachDB Serverless.
+This repository hosts a "headless" ETL pipeline that automatically aggregates professional license data from multiple states. It processes **Florida (DBPR)** and **Texas (TDLR)** data, standardizes addresses, and generates interactive maps.
 
 ## 🏗 Architecture
 
 * **Sources:**
-    * [Florida DBPR Cosmetology Extract](https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv) (CSV)
-    * [Florida DBPR Barber Extract](https://www2.myfloridalicense.com/sto/file_download/extracts/lic03bb.csv) (CSV)
-* **Orchestration:** **GitHub Actions** (Runs automatically every day at 8:00 AM UTC).
-* **Processing:** **Python 3.9** (Pandas, SQLAlchemy, USAddress, Requests).
-* **Geocoding:** **Hybrid Turbo Engine** (US Census Bureau Batch API + Mapbox API) with **Smart Caching**.
+    * **Florida:** DBPR Cosmetology & Barber extracts (CSV).
+    * **Texas:** TDLR Barbering & Cosmetology program extracts (CSV/API).
+* **Orchestration:** **GitHub Actions** (Daily refresh at 8:00 AM UTC).
 * **Storage:** **CockroachDB Serverless** (PostgreSQL-compatible).
+* **Geocoding:** Hybrid Engine (US Census Bureau + Mapbox API) with spatial boundary filtering.
 
 ## 🚀 Automation Flow
 
-### Stage 1: The "Factory" (`etl.py`)
-1.  **Extract:** Downloads raw CSVs for Florida specialists and establishments.
+### Stage 1: The "Factories" (`etl_fl.py`, `etl_tx.py`)
+1.  **Extract:** Downloads raw data for practitioners and establishments.
 2.  **Transform:**
-    * **Universal Adapter:** Normalizes schemas using exact Florida Board codes (e.g., `BB` for Barbers, `CE` for Salons, `FS` for Full Specialists).
-    * **AI Cleaning:** Uses `usaddress` to standardize addresses and fix "Ghost Data."
-    * **Filtering:** Automatically removes **PO Box** addresses to ensure map accuracy.
-    * **Segmentation:** Classifies locations as **Commercial** or **Residential** based on license density and unit identifiers.
-3.  **Load:** Overwrites the `address_insights_gold` table in CockroachDB with fresh daily data.
+    * **Florida:** Maps positional columns and filters for **Current (C)** and **Active (A)** status codes.
+    * **Texas:** Maps explicit headers and filters using **License Subtypes** (e.g., `BA` for Barber, `CS` for Salon).
+    * **Cleaning:** Removes **PO Box** addresses and standardizes physical locations using AI address parsing.
+3.  **Load:** Saves cleaned data to state-specific "Gold" tables (`address_insights_fl_gold`, `address_insights_tx_gold`).
 
-### Stage 2: The "Mapper" (`map_gen.py`)
-1.  **Fetch:** Reads Florida-only records from the gold table for processing.
-2.  **Hybrid Routing:**
-    * **Fast Lane:** Used for small daily updates.
-    * **Bulk Lane:** Used for large backfills.
-3.  **Parallel Processing:** Uses multi-threading to maximize geocoding speed.
-4.  **Checkpointing:** Saves results to the database incrementally to prevent data loss from timeouts.
-5.  **Spatial Filtering:** Final coordinates are checked against Florida's geographic boundaries to remove out-of-state mailing addresses.
-6.  **Artifact:** Uploads a final `Booksy_License_Database.csv` ready for visualization.
+### Stage 2: The "Mappers" (`map_gen_fl.py`, `map_gen_tx.py`)
+1.  **Geocoding:** Uses a shared `geo_cache` to minimize API costs.
+2.  **Spatial Filtering:** Verifies coordinates against state-specific bounding boxes to remove out-of-state mailing addresses.
+3.  **Artifacts:** Generates `Booksy_FL_Licenses.csv` and `Booksy_TX_Licenses.csv` for visualization in Kepler.gl.
 
-## 🛠 Setup & Deployment
+## 📊 Unified Mapping Logic
 
-### 1. Database Setup (CockroachDB)
-Create a free Serverless cluster at cockroachlabs.com and retrieve your connection string.
+| Grouping | Florida Code | Texas Subtype |
+| :--- | :--- | :--- |
+| **Barbers** | BB, BR, BA | BA, BT, TE, BR |
+| **Cosmetologists** | CL, FV, FB, FS | OP, FA, MA, HW, WG, SH, OR, MR |
+| **Establishments** | CE, MCS, BS | CS, MS, FS, HS, FM, WS, BS, DS |
+| **Schools** | PROV, PVDR | BC, VS, JC, PS |
 
-### 2. Local Development
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Set environment variables
+## 🛠 Setup
+1. Create a **CockroachDB Serverless** cluster.
+2. Add your connection string and Mapbox token to **GitHub Secrets**.
+3. Enable the **Daily Refresh** workflow.
