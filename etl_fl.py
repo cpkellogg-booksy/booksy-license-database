@@ -16,7 +16,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # CONFIGURATION
 FL_COSMO_URL = "https://www2.myfloridalicense.com/sto/file_download/extracts/COSMETOLOGYLICENSE_1.csv"
 FL_BARBER_URL = "https://www2.myfloridalicense.com/sto/file_download/extracts/lic03bb.csv"
-# HIGHLIGHT: Updated table name for state isolation
+# HIGHLIGHT: Table name for state isolation
 TARGET_TABLE = 'address_insights_fl_gold' 
 
 try:
@@ -58,8 +58,9 @@ def get_florida_data():
             df = pd.read_csv(io.BytesIO(r.content), encoding='latin1', on_bad_lines='skip', header=None)
             
             # HIGHLIGHT: Enforced Status Filters (Index 13=Primary, 14=Secondary)
-            df = df[df[13].isin(['C', 'P'])] # Current or Probation
-            df = df[df[14] == 'A']           # Active only
+            # C = Current, P = Probation, A = Active
+            df = df[df[13].isin(['C', 'P'])] 
+            df = df[df[14] == 'A']           
             
             df = df.rename(columns={1: 'type', 5: 'a1', 6: 'a2', 8: 'city', 9: 'state', 10: 'zip'})
             df['address'] = (df['a1'].fillna('').astype(str) + " " + df['a2'].fillna('').astype(str)).str.strip()
@@ -84,15 +85,25 @@ def main():
     full_df['is_salon'] = full_df['type'].str.fullmatch('CE|MCS', case=True).fillna(False).astype(int)
     full_df['is_barbershop'] = full_df['type'].str.fullmatch('BS', case=True).fillna(False).astype(int)
     full_df['is_owner'] = full_df['type'].str.fullmatch('OR', case=True).fillna(False).astype(int)
+    
+    # RECOMMENDED UPDATE: Capture School and Training categories (PROV, PVDR, etc.)
+    full_df['is_school'] = full_df['type'].str.contains('PROV|PVDR|CRSE|SPRV|HIVC', case=True).fillna(False).astype(int)
+    
     full_df['count'] = 1
     
     grouped = full_df.groupby(['address_clean', 'city', 'state', 'zip']).agg({
-        'count': 'sum', 'is_barber': 'sum', 'is_cosmo': 'sum', 
-        'is_salon': 'sum', 'is_barbershop': 'sum', 'is_owner': 'sum'
+        'count': 'sum', 
+        'is_barber': 'sum', 
+        'is_cosmo': 'sum', 
+        'is_salon': 'sum', 
+        'is_barbershop': 'sum', 
+        'is_owner': 'sum',
+        'is_school': 'sum' # HIGHLIGHT: Aggregating school count
     }).reset_index().rename(columns={
         'city': 'city_clean', 'zip': 'zip_clean', 'count': 'total_licenses',
         'is_barber': 'count_barber', 'is_cosmo': 'count_cosmetologist',
-        'is_salon': 'count_salon', 'is_barbershop': 'count_barbershop', 'is_owner': 'count_owner'
+        'is_salon': 'count_salon', 'is_barbershop': 'count_barbershop', 'is_owner': 'count_owner',
+        'is_school': 'count_school' # HIGHLIGHT: Renaming to standard column
     })
     grouped['address_type'] = grouped.apply(determine_type, axis=1)
 
