@@ -29,6 +29,15 @@ jobs:
           python -u etl_tx.py
           python -u map_gen_tx.py
           
+      # NEW STEP: Deploy CSVs to GitHub Pages
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./
+          keep_files: true  # Prevents deleting existing files if needed
+          destination_dir: data
+          
       - uses: actions/upload-artifact@v4
         with:
           name: Booksy_License_Data_Full
