@@ -1,0 +1,38 @@
+name: Test Website Build (No ETL)
+on:
+  workflow_dispatch:
+
+jobs:
+  test_build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      # 1. Install ONLY what is needed for the map
+      - run: pip install pandas keplergl
+      
+      # 2. Create Dummy Data (So the script doesn't crash)
+      - name: Create Dummy Data
+        run: |
+          echo "lat,lon,total_licenses,address_type,address_clean,city_clean,zip_clean" > Booksy_FL_Licenses.csv
+          echo "27.6648,-81.5158,10,Commercial,123 Disney Way,Orlando,32830" >> Booksy_FL_Licenses.csv
+          
+          echo "lat,lon,total_licenses,address_type,address_clean,city_clean,zip_clean" > Booksy_TX_Licenses.csv
+          echo "31.9686,-99.9018,5,Commercial,456 Cowboy Ln,Austin,73301" >> Booksy_TX_Licenses.csv
+
+      # 3. Run your new Generator Script
+      - name: Generate Site Assets
+        run: python generate_map.py
+          
+      # 4. Upload the files so you can look at them
+      # We do NOT deploy to GitHub Pages here to avoid breaking your live map with fake data.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Test_Site_Preview
+          path: |
+            index.html
+            map.html
+          retention-days: 1
