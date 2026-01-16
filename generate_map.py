@@ -7,88 +7,139 @@ FILES = {
     'FL': 'Booksy_FL_Licenses.csv',
     'TX': 'Booksy_TX_Licenses.csv'
 }
-MAP_FILENAME = 'map.html'      # The map moves here
-LANDING_FILENAME = 'index.html' # The new entry point
+OUTPUT_FILE = 'index.html'
 
-# Add your links here
-GEMINI_GEM_URL = "https://gemini.google.com/app/gemini"  # Replace with your specific Gem URL
-COCKROACH_CONSOLE_URL = "https://cockroachlabs.cloud/"   # Replace with your DB Console link
+# Update these with your real links
+GEMINI_LINK = "https://gemini.google.com/app/gemini"
+SQL_LINK = "https://cockroachlabs.cloud/"
 
-def generate_landing_page():
-    """Generates a clean HTML landing page."""
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Booksy License Database</title>
-        <style>
-            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f4f4f9; color: #333; }}
-            .container {{ max_width: 900px; margin: 50px auto; background: white; padding: 40px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); border-radius: 12px; }}
-            h1 {{ color: #2c3e50; text-align: center; }}
-            .btn-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-top: 30px; }}
-            .card {{ padding: 20px; border: 1px solid #eee; border-radius: 8px; text-align: center; transition: transform 0.2s; }}
-            .card:hover {{ transform: translateY(-5px); box-shadow: 0 4px 10px rgba(0,0,0,0.05); }}
-            .btn {{ display: inline-block; padding: 12px 24px; margin-top: 15px; text-decoration: none; border-radius: 6px; font-weight: bold; }}
-            .btn-map {{ background-color: #007bff; color: white; }}
-            .btn-gem {{ background-color: #8e44ad; color: white; }}
-            .btn-sql {{ background-color: #27ae60; color: white; }}
-            .instructions {{ background: #e8f4f8; padding: 15px; border-radius: 8px; margin-top: 40px; border-left: 5px solid #007bff; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>📍 Booksy License Database</h1>
-            <p style="text-align: center; color: #666;">Automated Intelligence & Spatial Analysis Portal</p>
+def add_dashboard_overlay(file_path):
+    """Injects a 'Mission Control' sidebar into the Kepler.gl HTML."""
+    
+    dashboard_html = f"""
+    <style>
+        /* Sidebar Styling */
+        #mission-control {{
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 320px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            font-family: 'Segoe UI', sans-serif;
+            z-index: 10000; /* Above the map */
+            transition: transform 0.3s ease;
+            max-height: 90vh;
+            overflow-y: auto;
+        }}
+        
+        /* Toggle Button */
+        #toggle-btn {{
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10001;
+            padding: 10px 15px;
+            background: #2c3e50;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            display: none; /* Hidden by default, shown if closed */
+        }}
+
+        h1 {{ margin: 0 0 10px 0; font-size: 22px; color: #2c3e50; }}
+        h2 {{ margin: 20px 0 10px 0; font-size: 16px; color: #666; text-transform: uppercase; letter-spacing: 1px; }}
+        p {{ font-size: 14px; color: #555; line-height: 1.5; }}
+        
+        /* Action Buttons */
+        .action-btn {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 10px;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: transform 0.2s;
+            box-sizing: border-box;
+        }}
+        .action-btn:hover {{ transform: translateY(-2px); }}
+        
+        .btn-gem {{ background: linear-gradient(135deg, #8E2DE2, #4A00E0); color: white; }}
+        .btn-sql {{ background: linear-gradient(135deg, #11998e, #38ef7d); color: white; }}
+        
+        /* Close Button */
+        .close-btn {{ position: absolute; top: 15px; right: 15px; cursor: pointer; color: #999; }}
+        
+        ul {{ padding-left: 20px; font-size: 13px; color: #444; }}
+        li {{ margin-bottom: 6px; }}
+    </style>
+
+    <button id="toggle-btn" onclick="toggleDashboard()">☰ Menu</button>
+
+    <div id="mission-control">
+        <div class="close-btn" onclick="toggleDashboard()">✕</div>
+        <h1>📍 Booksy Intelligence</h1>
+        <p>Live License Data for FL & TX.</p>
+        
+        <h2>External Tools</h2>
+        <a href="{GEMINI_LINK}" target="_blank" class="action-btn btn-gem">✨ Ask Gemini (AI)</a>
+        <a href="{SQL_LINK}" target="_blank" class="action-btn btn-sql">🔒 Database Console</a>
+        
+        <h2>Instructions</h2>
+        <ul>
+            <li><b>Rotate Map:</b> Right-Click + Drag</li>
+            <li><b>Filter:</b> Use the panel on the right ↗</li>
+            <li><b>Search:</b> Click the magnifying glass 🔍</li>
+        </ul>
+        
+        <p style="font-size: 11px; color: #999; margin-top: 20px;">
+            Data Refreshed Daily @ 8:00 AM UTC
+        </p>
+    </div>
+
+    <script>
+        function toggleDashboard() {{
+            const panel = document.getElementById('mission-control');
+            const btn = document.getElementById('toggle-btn');
             
-            <div class="btn-grid">
-                <div class="card">
-                    <h3>Interactive Map</h3>
-                    <p>View live spatial data for FL & TX.</p>
-                    <a href="{MAP_FILENAME}" class="btn btn-map">🚀 Launch Map</a>
-                </div>
-
-                <div class="card">
-                    <h3>AI Assistant</h3>
-                    <p>Ask questions via Gemini Gem.</p>
-                    <a href="{GEMINI_GEM_URL}" target="_blank" class="btn btn-gem">✨ Open Gemini</a>
-                </div>
-
-                <div class="card">
-                    <h3>Database Access</h3>
-                    <p>Run secure SQL queries.</p>
-                    <a href="{COCKROACH_CONSOLE_URL}" target="_blank" class="btn btn-sql">🔒 Open Console</a>
-                </div>
-            </div>
-
-            <div class="instructions">
-                <h3>📝 Usage Instructions</h3>
-                <ul>
-                    <li><b>Map:</b> Use the filters on the right sidebar to toggle between Barbers, Cosmos, and Shops.</li>
-                    <li><b>3D Mode:</b> Right-click and drag to tilt the map view.</li>
-                    <li><b>Search:</b> Use the magnifying glass to find specific addresses.</li>
-                    <li><b>Data Freshness:</b> Data is automatically refreshed daily at 8:00 AM UTC.</li>
-                </ul>
-            </div>
-        </div>
-    </body>
-    </html>
+            if (panel.style.transform === 'translateX(-150%)') {{
+                panel.style.transform = 'translateX(0)';
+                btn.style.display = 'none';
+            }} else {{
+                panel.style.transform = 'translateX(-150%)';
+                btn.style.display = 'block';
+            }}
+        }}
+    </script>
     """
-    with open(LANDING_FILENAME, 'w', encoding='utf-8') as f:
-        f.write(html_content)
-    print(f"✅ SUCCESS: Landing page saved to {LANDING_FILENAME}")
-
-def patch_map_fullscreen(file_path):
-    with open(file_path, 'r', encoding='utf-8') as f: content = f.read()
-    css = "<style>body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; } .kepler-gl-container { width: 100% !important; height: 100% !important; }</style>"
-    if '</head>' in content:
-        with open(file_path, 'w', encoding='utf-8') as f: f.write(content.replace('</head>', f'{css}</head>'))
-        print(f"   ✨ Applied Full-Screen Patch to {file_path}")
+    
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Inject CSS for full screen map + our dashboard HTML
+    fullscreen_css = "<style>body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; } .kepler-gl-container { width: 100% !important; height: 100% !important; }</style>"
+    
+    if '</body>' in content:
+        # Add Dashboard before body closes
+        content = content.replace('</body>', f'{dashboard_html}</body>')
+        # Add Fullscreen CSS in head
+        content = content.replace('</head>', f'{fullscreen_css}</head>')
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(f"   ✨ Injected Dashboard & Fullscreen styles into {file_path}")
 
 def main():
-    print("🚀 STARTING: Generating Site Assets...")
+    print("🚀 STARTING: Generating Single-Page Dashboard...")
     dfs = []
+    
     for state, file in FILES.items():
         if os.path.exists(file):
             print(f"   ... Loading {state} data")
@@ -96,17 +147,17 @@ def main():
     
     if not dfs: return
 
-    # 1. Generate Map
+    # 1. Merge Data
     combined_df = pd.concat(dfs, ignore_index=True).fillna(0)
+    
+    # 2. Generate Map
+    # Note: We set a config here if you have one, otherwise defaults are used
     m = KeplerGl(height=800)
     m.add_data(data=combined_df, name="Booksy Licenses")
-    m.save_to_html(file_name=MAP_FILENAME)
-    print(f"✅ SUCCESS: Map saved to {MAP_FILENAME}")
+    m.save_to_html(file_name=OUTPUT_FILE)
+    print(f"✅ SUCCESS: Base map saved to {OUTPUT_FILE}")
     
-    # 2. Patch Map
-    patch_map_fullscreen(MAP_FILENAME)
-
-    # 3. Generate Landing Page
-    generate_landing_page()
+    # 3. Inject The Dashboard Interface
+    add_dashboard_overlay(OUTPUT_FILE)
 
 if __name__ == "__main__": main()
