@@ -4,10 +4,8 @@ on:
     - cron: '0 8 * * *'
   workflow_dispatch:
 
-# --- THIS IS THE CRITICAL FIX ---
 permissions:
   contents: write
-# -------------------------------
 
 jobs:
   refresh:
@@ -17,7 +15,9 @@ jobs:
       - uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-      - run: pip install pandas sqlalchemy psycopg2-binary sqlalchemy-cockroachdb certifi usaddress requests
+      
+      # Install the new keplergl library
+      - run: pip install -r requirements.txt
       
       - name: Run Florida Pipeline
         env:
@@ -35,20 +35,21 @@ jobs:
           python -u etl_tx.py
           python -u map_gen_tx.py
 
-      # Generates the single combined file
-      - name: Merge States
-        run: python merge_states.py
+      # Run the new Map Generator
+      - name: Generate Interactive Map
+        run: python generate_map.py
           
+      # Deploy the HTML file to GitHub Pages
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./
           keep_files: true
-          destination_dir: data
+          destination_dir: ./  # Puts index.html at the root URL
           
       - uses: actions/upload-artifact@v4
         with:
-          name: Booksy_License_Data_Full
-          path: Booksy_*.csv
+          name: Booksy_Interactive_Map
+          path: index.html
           retention-days: 5
