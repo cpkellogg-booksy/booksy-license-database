@@ -5,3 +5,4 @@ sqlalchemy-cockroachdb
 certifi
 usaddress
 requests
+keplergl
