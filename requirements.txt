@@ -1,0 +1,8 @@
+pandas
+sqlalchemy
+psycopg2-binary
+sqlalchemy-cockroachdb
+certifi
+usaddress
+requests
+keplergl
