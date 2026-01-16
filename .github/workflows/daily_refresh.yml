@@ -4,7 +4,6 @@ on:
     - cron: '0 8 * * *'
   workflow_dispatch:
 
-# Critical for GitHub Pages deployment
 permissions:
   contents: write
 
@@ -17,7 +16,6 @@ jobs:
         with:
           python-version: '3.9'
       
-      # Install dependencies (Including keplergl for the map)
       - run: pip install pandas sqlalchemy psycopg2-binary sqlalchemy-cockroachdb certifi usaddress requests keplergl
       
       - name: Run Florida Pipeline
@@ -36,8 +34,8 @@ jobs:
           python -u etl_tx.py
           python -u map_gen_tx.py
 
-      # Runs the new script to build index.html (landing) and map.html (map)
-      - name: Generate Site Assets
+      # Generates the single index.html with the new dashboard overlay
+      - name: Generate Dashboard
         run: python generate_map.py
           
       - name: Deploy to GitHub Pages
@@ -50,8 +48,6 @@ jobs:
           
       - uses: actions/upload-artifact@v4
         with:
-          name: Booksy_Site_Assets
-          path: |
-            index.html
-            map.html
+          name: Booksy_Interactive_Map
+          path: index.html
           retention-days: 5
