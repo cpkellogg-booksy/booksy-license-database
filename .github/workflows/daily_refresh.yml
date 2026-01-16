@@ -4,6 +4,7 @@ on:
     - cron: '0 8 * * *'
   workflow_dispatch:
 
+# Critical for GitHub Pages deployment
 permissions:
   contents: write
 
@@ -16,8 +17,8 @@ jobs:
         with:
           python-version: '3.9'
       
-      # Install the new keplergl library
-      - run: pip install -r requirements.txt
+      # Install dependencies (Including keplergl for the map)
+      - run: pip install pandas sqlalchemy psycopg2-binary sqlalchemy-cockroachdb certifi usaddress requests keplergl
       
       - name: Run Florida Pipeline
         env:
@@ -35,21 +36,22 @@ jobs:
           python -u etl_tx.py
           python -u map_gen_tx.py
 
-      # Run the new Map Generator
-      - name: Generate Interactive Map
+      # Runs the new script to build index.html (landing) and map.html (map)
+      - name: Generate Site Assets
         run: python generate_map.py
           
-      # Deploy the HTML file to GitHub Pages
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./
           keep_files: true
-          destination_dir: ./  # Puts index.html at the root URL
+          destination_dir: ./
           
       - uses: actions/upload-artifact@v4
         with:
-          name: Booksy_Interactive_Map
-          path: index.html
+          name: Booksy_Site_Assets
+          path: |
+            index.html
+            map.html
           retention-days: 5
