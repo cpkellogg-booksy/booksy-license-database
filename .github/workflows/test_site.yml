@@ -1,4 +1,4 @@
-name: Test Website Build (No ETL)
+name: Test Dashboard UI (No ETL)
 on:
   workflow_dispatch:
 
@@ -11,28 +11,25 @@ jobs:
         with:
           python-version: '3.9'
       
-      # 1. Install ONLY what is needed for the map
+      # Install dependencies
       - run: pip install pandas keplergl
       
-      # 2. Create Dummy Data (So the script doesn't crash)
+      # Create Dummy Data (So the map has points to render)
       - name: Create Dummy Data
         run: |
           echo "lat,lon,total_licenses,address_type,address_clean,city_clean,zip_clean" > Booksy_FL_Licenses.csv
-          echo "27.6648,-81.5158,10,Commercial,123 Disney Way,Orlando,32830" >> Booksy_FL_Licenses.csv
+          echo "28.5383,-81.3792,10,Commercial,123 Test St,Orlando,32801" >> Booksy_FL_Licenses.csv
           
           echo "lat,lon,total_licenses,address_type,address_clean,city_clean,zip_clean" > Booksy_TX_Licenses.csv
-          echo "31.9686,-99.9018,5,Commercial,456 Cowboy Ln,Austin,73301" >> Booksy_TX_Licenses.csv
+          echo "30.2672,-97.7431,5,Commercial,456 Test Blvd,Austin,78701" >> Booksy_TX_Licenses.csv
 
-      # 3. Run your new Generator Script
-      - name: Generate Site Assets
+      # Run your NEW generator script
+      - name: Generate Dashboard
         run: python generate_map.py
           
-      # 4. Upload the files so you can look at them
-      # We do NOT deploy to GitHub Pages here to avoid breaking your live map with fake data.
+      # Upload the result for inspection
       - uses: actions/upload-artifact@v4
         with:
-          name: Test_Site_Preview
-          path: |
-            index.html
-            map.html
+          name: Test_Dashboard_Preview
+          path: index.html
           retention-days: 1
