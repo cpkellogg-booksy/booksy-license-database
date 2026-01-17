@@ -1,51 +1,34 @@
 name: Daily Data Refresh
-
 on:
   schedule:
-    - cron: '0 8 * * *'  # Runs automatically at 8:00 AM UTC
-  workflow_dispatch:     # Allows you to click "Run workflow" manually
-
+    - cron: '0 8 * * *'
+  workflow_dispatch:
 permissions:
   contents: write
-
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
-
     steps:
-      # 1. CHECKOUT CODE
       - name: Checkout Repository
         uses: actions/checkout@v3
-
-      # 2. SETUP PYTHON
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-
-      # 3. INSTALL LIBRARIES
       - name: Install Dependencies
-        run: |
-          pip install pandas keplergl requests psycopg2-binary
-          
-      # 4. RUN ETL PIPELINES (Fetch Fresh Data)
+        run: pip install pandas keplergl requests psycopg2-binary
       - name: Run Florida ETL
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python etl_fl.py || echo "Warning: FL script encountered an issue (continuing...)"
-
+        run: python etl_fl.py || echo "Warning FL script encountered an issue"
       - name: Run Texas ETL
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python etl_tx.py || echo "Warning: TX script encountered an issue (continuing...)"
-
-      # 5. GENERATE MAP & REDIRECT PAGE
+        run: python etl_tx.py || echo "Warning TX script encountered an issue"
       - name: Generate Map Files
         run: python generate_map.py
-
-      # 6. UPLOAD ARTIFACTS (Crucial Fix: Saves both files)
       - name: Upload Site Assets
         uses: actions/upload-artifact@v4
         with:
@@ -54,8 +37,6 @@ jobs:
             index.html
             kepler_map.html
           retention-days: 5
-
-      # 7. DEPLOY TO GITHUB PAGES
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
