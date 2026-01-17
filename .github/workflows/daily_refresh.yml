@@ -33,13 +33,13 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python etl_fl.py || echo "⚠️ Warning: FL script encountered an issue (continuing...)"
+        run: python etl_fl.py || echo "Warning: FL script encountered an issue (continuing...)"
 
       - name: Run Texas ETL
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python etl_tx.py || echo "⚠️ Warning: TX script encountered an issue (continuing...)"
+        run: python etl_tx.py || echo "Warning: TX script encountered an issue (continuing...)"
 
       # 5. GENERATE MAP & REDIRECT PAGE
       - name: Generate Map Files
@@ -61,4 +61,4 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./
-          keep_files: true  # Ensures we don't accidentally delete existing history if needed
+          keep_files: true
