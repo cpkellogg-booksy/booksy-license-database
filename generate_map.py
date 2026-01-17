@@ -13,170 +13,171 @@ OUTPUT_FILE = 'index.html'
 GEMINI_LINK = "https://gemini.google.com/app/gemini"
 SQL_LINK = "https://cockroachlabs.cloud/"
 
+# FORCE MAP CAMERA (Centers on US South)
+MAP_CONFIG = {
+    "version": "v1",
+    "config": {
+        "mapState": {
+            "bearing": 0,
+            "dragRotate": True,
+            "latitude": 30.5,
+            "longitude": -90.0,
+            "pitch": 0,
+            "zoom": 5,
+            "isSplit": False
+        },
+        "mapStyle": {
+            "styleType": "dark"
+        }
+    }
+}
+
 def add_booksy_interface(file_path):
-    """Injects the Booksy Brand UI without breaking the Kepler Map."""
+    """Injects the Booksy Interface while enforcing Map visibility."""
     
-    print("   ... Injecting Dashboard Interface")
+    print("   ... Injecting Layout-Proof Interface")
     
-    # SVG ICONS (Defined as raw strings)
-    ICON_GEMINI = '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#967FD8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5zm0 0v20"/></svg>'
-    ICON_MAP = '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#0BA3AD" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>'
-    ICON_LOCK = '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#E2FD96" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>'
+    # SVG ICONS (Raw strings)
+    ICON_GEMINI = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:8px;"><path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5zm0 0v20"/></svg>'
+    ICON_DB = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:8px;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>'
+    ICON_HOME = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:8px;"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>'
 
-    # CSS & HTML (Split to avoid Python formatting issues)
+    # CSS - FORCED LAYOUT
     css_styles = """
-    <link href="https://fonts.googleapis.com/css2?family=Besley:ital,wght@0,400;0,700;1,400&family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&family=Besley:ital@1&display=swap" rel="stylesheet">
     <style>
-        :root { --charcoal: #2A2C32; --teal: #0BA3AD; --sour-green: #E2FD96; --amethyst: #967FD8; --smoke: #EEEEEE; --white: #FFFFFF; }
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: var(--charcoal); font-family: 'Poppins', sans-serif; }
-        
-        /* FORCE MAP FULL SCREEN */
-        #app, .kepler-gl-container { width: 100% !important; height: 100% !important; position: absolute; top: 0; left: 0; z-index: 1; }
-
-        /* LANDING PAGE */
-        #landing-page {
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(42, 44, 50, 0.98);
-            backdrop-filter: blur(15px);
-            z-index: 99999; /* Highest priority */
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
-            transition: opacity 0.4s ease;
+        :root { 
+            --charcoal: #2A2C32; 
+            --teal: #0BA3AD; 
+            --sour-green: #E2FD96; 
+            --white: #FFFFFF; 
         }
         
-        .hero-content { text-align: center; max-width: 1000px; padding: 20px; z-index: 100000; }
-        
-        h1 { font-size: 4rem; font-weight: 800; color: var(--white); margin: 0; letter-spacing: -2px; line-height: 1.1; text-transform: uppercase; }
-        h1 span { color: var(--teal); }
-        p.subtitle { font-family: 'Besley', serif; font-size: 1.4rem; color: var(--smoke); margin: 15px 0 50px 0; font-style: italic; opacity: 0.9; }
-
-        /* CARDS */
-        .card-grid { display: flex; gap: 30px; justify-content: center; flex-wrap: wrap; margin-bottom: 40px; }
-        .card {
-            background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 40px 30px; border-radius: 16px; width: 220px; text-align: center;
-            transition: all 0.3s ease; cursor: pointer; text-decoration: none;
-            display: flex; flex-direction: column; align-items: center;
+        /* 1. FORCE ROOT TO FILL SCREEN */
+        body, html { 
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            overflow: hidden; background: var(--charcoal); 
+            font-family: 'Poppins', sans-serif;
         }
-        .card:hover { transform: translateY(-8px); border-color: var(--teal); background: rgba(255, 255, 255, 0.08); }
-        .icon-box { margin-bottom: 20px; }
-        .card h3 { color: var(--white); font-weight: 700; font-size: 1.2rem; margin: 0 0 5px 0; text-transform: uppercase; }
-        .card p { color: var(--smoke); font-size: 0.9rem; margin: 0; opacity: 0.7; }
 
-        /* BUTTON */
-        .explore-btn {
-            background: var(--teal); color: var(--white); font-family: 'Poppins', sans-serif; font-weight: 800; text-transform: uppercase;
-            padding: 20px 60px; border-radius: 100px; border: none; font-size: 1.2rem; cursor: pointer;
-            box-shadow: 0 10px 30px rgba(11, 163, 173, 0.3); transition: all 0.3s;
+        /* 2. FORCE MAP TO BE BACKGROUND LAYER */
+        #app, .kepler-gl-container {
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            z-index: 0 !important; /* Behind everything */
         }
-        .explore-btn:hover { background: var(--sour-green); color: var(--charcoal); transform: scale(1.05); }
 
-        /* DOCK */
+        /* 3. UI LAYER (Floating on top) */
+        #booksy-ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 9999; /* On top of map */
+            pointer-events: none; /* Let clicks pass through to map */
+        }
+
+        /* HEADER (Top Left) */
+        #booksy-header {
+            position: absolute; top: 20px; left: 20px;
+            background: rgba(42, 44, 50, 0.9);
+            padding: 12px 24px; border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            pointer-events: auto; /* clickable */
+        }
+        #booksy-header h1 {
+            margin: 0; font-size: 1.4rem; color: var(--white);
+            font-weight: 800; text-transform: uppercase;
+        }
+        #booksy-header span { color: var(--teal); }
+        #booksy-header p {
+            margin: 4px 0 0 0; font-family: 'Besley', serif; font-style: italic;
+            color: var(--sour-green); font-size: 0.85rem;
+        }
+
+        /* DOCK (Bottom Center) */
         #control-dock {
-            position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(200px);
-            background: rgba(42, 44, 50, 0.95); backdrop-filter: blur(12px);
-            border: 1px solid rgba(255,255,255,0.1); padding: 10px 20px; border-radius: 100px;
-            display: flex; gap: 15px; z-index: 10000; transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 12px;
+            background: rgba(42, 44, 50, 0.95);
+            padding: 10px 10px; border-radius: 100px;
+            border: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(12px);
+            pointer-events: auto; /* clickable */
+            box-shadow: 0 10px 40px rgba(0,0,0,0.4);
         }
+
         .dock-btn {
-            color: var(--white); text-decoration: none; font-size: 0.9rem; font-weight: 600;
-            padding: 10px 20px; border-radius: 50px; transition: 0.2s; text-transform: uppercase;
+            display: flex; align-items: center; text-decoration: none;
+            color: var(--white); font-size: 0.9rem; font-weight: 600;
+            padding: 10px 20px; border-radius: 50px;
+            transition: all 0.2s ease;
         }
-        .dock-btn:hover { background: rgba(255,255,255,0.1); color: var(--sour-green); }
-        .dock-btn.home { color: var(--smoke); opacity: 0.6; }
-        
-        .dock-visible { transform: translateX(-50%) translateY(0) !important; }
+
+        .dock-btn:hover { background: rgba(255,255,255,0.1); color: var(--sour-green); transform: translateY(-3px); }
+        .dock-btn.primary { background: var(--teal); color: var(--white); }
+        .dock-btn.primary:hover { background: var(--sour-green); color: var(--charcoal); }
+        .divider { width: 1px; background: rgba(255,255,255,0.1); margin: 5px 0; }
+
     </style>
     """
 
+    # HTML UI - Wrapped in a container
     ui_body = """
-    <div id="landing-page">
-        <div class="hero-content">
+    <div id="booksy-ui-layer">
+        <div id="booksy-header">
             <h1>Booksy <span>Intelligence</span></h1>
-            <p class="subtitle">Unified Spatial Data for FL & TX</p>
-            
-            <div class="card-grid">
-                <a href="[[LINK_GEMINI]]" target="_blank" class="card">
-                    <div class="icon-box">[[ICON_GEMINI]]</div>
-                    <h3>Ask Gemini</h3>
-                    <p>AI Market Analysis</p>
-                </a>
-                
-                <div class="card" onclick="enterMap()">
-                    <div class="icon-box">[[ICON_MAP]]</div>
-                    <h3>Launch Map</h3>
-                    <p>Explore 275k+ Licenses</p>
-                </div>
+            <p>Unified Spatial Data • FL & TX</p>
+        </div>
 
-                <a href="[[LINK_SQL]]" target="_blank" class="card">
-                    <div class="icon-box">[[ICON_LOCK]]</div>
-                    <h3>Data Vault</h3>
-                    <p>CockroachDB Console</p>
-                </a>
-            </div>
-
-            <button class="explore-btn" onclick="enterMap()">Start Exploring</button>
+        <div id="control-dock">
+            <a href="#" class="dock-btn" onclick="location.reload()">
+                [[ICON_HOME]] Reset
+            </a>
+            <div class="divider"></div>
+            <a href="[[LINK_GEMINI]]" target="_blank" class="dock-btn primary">
+                [[ICON_GEMINI]] Ask Gemini
+            </a>
+            <a href="[[LINK_SQL]]" target="_blank" class="dock-btn">
+                [[ICON_DB]] Database
+            </a>
         </div>
     </div>
-
-    <div id="control-dock">
-        <a href="#" onclick="showLanding()" class="dock-btn home">Home</a>
-        <a href="[[LINK_GEMINI]]" target="_blank" class="dock-btn">Gemini</a>
-        <a href="[[LINK_SQL]]" target="_blank" class="dock-btn">DB Console</a>
-    </div>
-
-    <script>
-        function enterMap() {
-            var landing = document.getElementById('landing-page');
-            var dock = document.getElementById('control-dock');
-            
-            // Hard hide to ensure map is clickable
-            landing.style.opacity = '0';
-            setTimeout(function() { landing.style.display = 'none'; }, 400);
-            
-            dock.classList.add('dock-visible');
-        }
-        
-        function showLanding() {
-            var landing = document.getElementById('landing-page');
-            var dock = document.getElementById('control-dock');
-            
-            landing.style.display = 'flex';
-            // Small timeout to allow display:flex to render before opacity transition
-            setTimeout(function() { landing.style.opacity = '1'; }, 10);
-            
-            dock.classList.remove('dock-visible');
-        }
-    </script>
     """
 
-    # SAFE REPLACEMENT
+    # REPLACEMENTS
     ui_body = ui_body.replace("[[LINK_GEMINI]]", GEMINI_LINK)
     ui_body = ui_body.replace("[[LINK_SQL]]", SQL_LINK)
     ui_body = ui_body.replace("[[ICON_GEMINI]]", ICON_GEMINI)
-    ui_body = ui_body.replace("[[ICON_MAP]]", ICON_MAP)
-    ui_body = ui_body.replace("[[ICON_LOCK]]", ICON_LOCK)
+    ui_body = ui_body.replace("[[ICON_DB]]", ICON_DB)
+    ui_body = ui_body.replace("[[ICON_HOME]]", ICON_HOME)
 
-    # READ AND INJECT
+    # INJECT
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        if '</head>' in content and '</body>' in content:
-            # We use simple string concatenation here to avoid f-string corruption
-            content = content.replace('</head>', css_styles + '</head>')
-            content = content.replace('</body>', ui_body + '</body>')
+        # We inject CSS in Head, and UI at the START of Body to avoid script conflicts
+        if '<body>' in content:
+            content = content.replace('<head>', '<head>' + css_styles)
+            content = content.replace('<body>', '<body>' + ui_body)
             
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            print("   ✨ SUCCESSFULLY injected Interface.")
+            print("   ✨ SUCCESSFULLY injected Booksy UI.")
         else:
-            print("   ❌ ERROR: Could not find HTML tags to inject interface.")
+            print("   ❌ ERROR: Could not find HTML tags.")
             
     except Exception as e:
-        print(f"   ❌ FATAL ERROR injecting interface: {e}")
+        print(f"   ❌ FATAL ERROR: {e}")
 
 def main():
-    print("🚀 STARTING: Generating Booksy Brand Dashboard...")
+    print("🚀 STARTING: Generating Booksy Map...")
     dfs = []
     
     for state, file in FILES.items():
@@ -187,15 +188,14 @@ def main():
             print(f"   ⚠️ Warning: {file} not found")
     
     if not dfs:
-        print("❌ NO DATA FOUND. Cannot generate map.")
+        print("❌ NO DATA FOUND.")
         return
 
     combined_df = pd.concat(dfs, ignore_index=True).fillna(0)
-    print(f"   ✅ Data Merged: {len(combined_df)} rows")
     
-    # Generate Map
+    # Generate Map with FORCED CONFIG
     try:
-        m = KeplerGl(height=800)
+        m = KeplerGl(height=800, config=MAP_CONFIG)
         m.add_data(data=combined_df, name="Booksy Licenses")
         m.save_to_html(file_name=OUTPUT_FILE)
         print(f"   ✅ Base Map Saved: {OUTPUT_FILE}")
