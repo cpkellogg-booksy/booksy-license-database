@@ -11,66 +11,74 @@ OUTPUT_FILE = 'index.html'
 
 def patch_fullscreen(file_path):
     """
-    Overwrites Kepler's default sizing with a 'fixed' position
-    that forces the map to touch all 4 corners of the screen.
+    Expands the map to fill the screen using Flexbox logic, 
+    which is safer than absolute positioning for React apps.
     """
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # AGGRESSIVE FULL SCREEN CSS
+    # CSS: Target the ROOT containers specifically
     css = """
     <style>
-        /* Reset margins */
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
-        
-        /* Force the Kepler container to be fixed to the viewport */
-        .kepler-gl-container, #app, #kepler-gl {
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            bottom: 0 !important;
-            right: 0 !important;
+        /* 1. Ensure the page itself is full size */
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden; /* Prevent scrollbars */
+        }
+
+        /* 2. Force the React Root (#app) to fill the parent */
+        /* Kepler usually wraps itself in a div, sometimes with id='app' or class='kepler-gl-container' */
+        body > div {
             width: 100vw !important;
             height: 100vh !important;
-            z-index: 1;
+        }
+
+        /* 3. Force the internal map container to fill the Root */
+        .kepler-gl-container {
+            width: 100% !important;
+            height: 100% !important;
         }
     </style>
     """
     
-    # Inject right before the closing head tag
+    # Inject styles into the Head
     if '</head>' in content:
         content = content.replace('</head>', f'{css}</head>')
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(content)
-        print(f"   ✨ Applied 'Position Fixed' Full Screen Patch.")
+        print(f"   ✨ Applied Safe Full-Screen Patch.")
 
 def main():
-    print("🚀 STARTING: Generating Full Screen Map...")
+    print("🚀 STARTING: Generating Map...")
     dfs = []
     
-    # 1. Load Data
+    # 1. Load Real Data
     for state, file in FILES.items():
         if os.path.exists(file):
             print(f"   ... Loading {state}")
             dfs.append(pd.read_csv(file))
         else:
             print(f"   ⚠️ Warning: {file} not found")
-    
-    # Fallback if no data (so you don't get a crash during testing)
+            
     if not dfs:
-        print("⚠️ No data found. Using dummy point for layout test.")
-        dfs.append(pd.DataFrame({'lat': [41.8781], 'lon': [-87.6298], 'name': ['Test Point']}))
+        print("❌ NO DATA FOUND. Cannot generate map.")
+        return
 
     # 2. Merge
     combined_df = pd.concat(dfs, ignore_index=True).fillna(0)
+    print(f"   ✅ Merged {len(combined_df)} records.")
 
     # 3. Generate Map
-    m = KeplerGl(height=800) # Initial height doesn't matter, CSS will override
+    # Note: We leave height default here, letting CSS handle the sizing
+    m = KeplerGl() 
     m.add_data(data=combined_df, name="Booksy Licenses")
     m.save_to_html(file_name=OUTPUT_FILE)
     print(f"✅ Map saved to {OUTPUT_FILE}")
     
-    # 4. Force Full Screen
+    # 4. Patch HTML
     patch_fullscreen(OUTPUT_FILE)
 
 if __name__ == "__main__": main()
