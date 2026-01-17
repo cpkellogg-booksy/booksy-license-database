@@ -7,62 +7,74 @@ FILES = {
     'FL': 'Booksy_FL_Licenses.csv',
     'TX': 'Booksy_TX_Licenses.csv'
 }
-OUTPUT_FILE = 'index.html'
+MAP_FILENAME = 'kepler_map.html'
+INDEX_FILENAME = 'index.html'
 
-# FORCE CAMERA CENTER (So you don't stare at the ocean)
-MAP_CONFIG = {
-    "version": "v1",
-    "config": {
-        "mapState": {
-            "latitude": 30.0,
-            "longitude": -90.0,
-            "zoom": 5
-        }
-    }
-}
-
-def force_fullscreen(file_path):
+def create_redirect_page():
     """
-    Injects CSS that forces the browser to render the map at 100% viewport height.
+    Creates a simple index.html that redirects to the map file.
+    This ensures the map loads in its own clean environment.
+    """
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Loading Booksy Map...</title>
+        <meta http-equiv="refresh" content="0; url={MAP_FILENAME}" />
+        
+        <style>
+            body {{ font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #2A2C32; color: white; }}
+            a {{ color: #0BA3AD; text-decoration: none; font-size: 1.2rem; border: 1px solid #0BA3AD; padding: 10px 20px; border-radius: 5px; margin-top: 20px; }}
+            a:hover {{ background: #0BA3AD; color: white; }}
+        </style>
+    </head>
+    <body>
+        <p>Loading Map...</p>
+        <a href="{MAP_FILENAME}">Click here if not redirected</a>
+    </body>
+    </html>
+    """
+    with open(INDEX_FILENAME, 'w', encoding='utf-8') as f:
+        f.write(html_content)
+    print(f"   ✨ Generated Redirect Page: {INDEX_FILENAME}")
+
+def patch_map_file(file_path):
+    """
+    Patches the map file to force it to be 100% full screen using Fixed Positioning.
     """
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # The CSS Fix
-    fullscreen_style = """
+    # CSS to force the map container to touch all 4 corners of the window
+    css_fix = """
     <style>
-        /* Force the browser window to have a defined height */
-        html, body {
-            height: 100vh;
-            width: 100vw;
-            margin: 0;
-            padding: 0;
-            overflow: hidden;
-        }
+        body, html { margin: 0; padding: 0; overflow: hidden; }
         
-        /* Force the container ID 'app' (Kepler's default) to fill that height */
+        /* Force the Kepler Root ID to be fixed size */
         #app, .kepler-gl-container {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100% !important;
-            height: 100% !important;
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            bottom: 0 !important;
+            right: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            z-index: 9999;
         }
     </style>
     """
-
-    # Inject immediately after the opening <body> tag to ensure it takes precedence
-    if '<body>' in content:
-        content = content.replace('<body>', f'<body>{fullscreen_style}')
-        
+    
+    # Inject CSS
+    if '</head>' in content:
+        content = content.replace('</head>', f'{css_fix}</head>')
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(content)
-        print("   ✅ Applied Full-Screen CSS Fix.")
-    else:
-        print("   ❌ ERROR: Could not apply fix (<body> tag not found).")
+        print(f"   ✨ Patched Map File for Full Screen.")
 
 def main():
-    print("🚀 STARTING: Generating Full-Screen Map...")
+    print("🚀 STARTING: Generating Isolated Map...")
     dfs = []
     
     # 1. Load Data
@@ -70,23 +82,23 @@ def main():
         if os.path.exists(file):
             print(f"   ... Loading {state}")
             dfs.append(pd.read_csv(file))
-        else:
-            print(f"   ⚠️ Warning: {file} not found")
-
+    
     if not dfs:
-        print("❌ NO DATA FOUND.")
-        return
+        print("❌ NO DATA FOUND. Using dummy data for test.")
+        dfs.append(pd.DataFrame({'lat': [30.26], 'lon': [-97.74], 'name': ['Test']}))
 
     combined_df = pd.concat(dfs, ignore_index=True).fillna(0)
 
-    # 2. Generate Map
-    # We pass the config to ensure it centers on the US
-    m = KeplerGl(height=800, config=MAP_CONFIG)
+    # 2. Generate the Map File (kepler_map.html)
+    m = KeplerGl(height=800) # Height is overridden by patch
     m.add_data(data=combined_df, name="Booksy Licenses")
-    m.save_to_html(file_name=OUTPUT_FILE)
-    print(f"✅ Base Map saved to {OUTPUT_FILE}")
+    m.save_to_html(file_name=MAP_FILENAME)
+    print(f"✅ Saved Map to: {MAP_FILENAME}")
     
-    # 3. Apply the Full Screen Fix
-    force_fullscreen(OUTPUT_FILE)
+    # 3. Patch the Map File
+    patch_map_file(MAP_FILENAME)
+    
+    # 4. Generate the Index Redirector
+    create_redirect_page()
 
 if __name__ == "__main__": main()
