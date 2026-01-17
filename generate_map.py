@@ -9,31 +9,49 @@ FILES = {
 }
 OUTPUT_FILE = 'index.html'
 
-def force_fullscreen_hack(file_path):
+def patch_fullscreen(file_path):
     """
-    Locates the hardcoded height we set (1337px) and replaces it 
-    with 100vh (Full Screen) directly in the HTML source.
+    Patches the HTML to force the React root container (#app)
+    to take up the full window size.
     """
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # 1. The Magic Swap: Find our unique number and replace with full screen unit
-    if '1337px' in content:
-        content = content.replace('1337px', '100vh')
-        print("   ✨ HACK SUCCESS: Swapped hardcoded height for 100vh.")
-    else:
-        print("   ⚠️ WARNING: Could not find '1337px' marker. Map might not resize.")
+    # CSS Patch: Target #app specifically
+    css = """
+    <style>
+        /* 1. Reset Global Margins */
+        body, html { 
+            margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; 
+        }
 
-    # 2. Add basic margin reset (just in case)
-    # We inject this simple style at the top of the body
-    reset_style = '<style>body, html { margin: 0; padding: 0; overflow: hidden; }</style>'
-    content = content.replace('<body>', f'<body>{reset_style}')
+        /* 2. Force the React Application Root to Fill Screen */
+        #app {
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+        }
 
-    with open(file_path, 'w', encoding='utf-8') as f:
-        f.write(content)
+        /* 3. Force the Map Container inside #app to Fill Screen */
+        .kepler-gl-container {
+            width: 100% !important;
+            height: 100% !important;
+        }
+    </style>
+    """
+    
+    # Inject before closing head
+    if '</head>' in content:
+        content = content.replace('</head>', f'{css}</head>')
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(f"   ✨ HTML Patched: Forced #app to 100vh.")
 
 def main():
-    print("🚀 STARTING: Generating Map (Pixel Hack Method)...")
+    print("🚀 STARTING: Generating Map...")
     dfs = []
     
     # 1. Load Data
@@ -43,22 +61,22 @@ def main():
             dfs.append(pd.read_csv(file))
         else:
             print(f"   ⚠️ Warning: {file} not found")
-
+            
+    # Fallback for testing
     if not dfs:
-        # Fallback for testing if files are missing
-        print("   ⚠️ No data found. creating dummy point.")
+        print("   ⚠️ No data found. Using dummy point.")
         dfs.append(pd.DataFrame({'lat': [30.2672], 'lon': [-97.7431], 'name': ['Test Point']}))
 
     combined_df = pd.concat(dfs, ignore_index=True).fillna(0)
 
-    # 2. Generate Map with UNIQUE HEIGHT
-    # We use 1337 as a marker so we can find it easily in the text file later
-    m = KeplerGl(height=1337)
+    # 2. Generate Map
+    # We use a standard height here because our CSS patch #2 overrides it completely
+    m = KeplerGl(height=800)
     m.add_data(data=combined_df, name="Booksy Licenses")
     m.save_to_html(file_name=OUTPUT_FILE)
     print(f"✅ Base Map saved to {OUTPUT_FILE}")
     
-    # 3. Execute the Hack
-    force_fullscreen_hack(OUTPUT_FILE)
+    # 3. Apply the Fix
+    patch_fullscreen(OUTPUT_FILE)
 
 if __name__ == "__main__": main()
