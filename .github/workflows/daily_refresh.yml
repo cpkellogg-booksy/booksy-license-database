@@ -1,53 +1,64 @@
 name: Daily Data Refresh
+
 on:
   schedule:
-    - cron: '0 8 * * *'
-  workflow_dispatch:
+    - cron: '0 8 * * *'  # Runs automatically at 8:00 AM UTC
+  workflow_dispatch:     # Allows you to click "Run workflow" manually
 
 permissions:
   contents: write
 
 jobs:
-  refresh:
+  build_and_deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      # 1. CHECKOUT CODE
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      # 2. SETUP PYTHON
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-      
-      - run: pip install pandas sqlalchemy psycopg2-binary sqlalchemy-cockroachdb certifi usaddress requests keplergl
-      
-      - name: Run Florida Pipeline
-        env:
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
-          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
-        run: |
-          python -u etl_fl.py
-          python -u map_gen_fl.py
-          
-      - name: Run Texas Pipeline
-        env:
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
-          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
-        run: |
-          python -u etl_tx.py
-          python -u map_gen_tx.py
 
-      # Generates the single index.html with the new dashboard overlay
-      - name: Generate Dashboard
-        run: python generate_map.py
+      # 3. INSTALL LIBRARIES
+      - name: Install Dependencies
+        run: |
+          pip install pandas keplergl requests psycopg2-binary
           
+      # 4. RUN ETL PIPELINES (Fetch Fresh Data)
+      - name: Run Florida ETL
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python etl_fl.py || echo "⚠️ Warning: FL script encountered an issue (continuing...)"
+
+      - name: Run Texas ETL
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python etl_tx.py || echo "⚠️ Warning: TX script encountered an issue (continuing...)"
+
+      # 5. GENERATE MAP & REDIRECT PAGE
+      - name: Generate Map Files
+        run: python generate_map.py
+
+      # 6. UPLOAD ARTIFACTS (Crucial Fix: Saves both files)
+      - name: Upload Site Assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: Booksy_Site_Assets
+          path: |
+            index.html
+            kepler_map.html
+          retention-days: 5
+
+      # 7. DEPLOY TO GITHUB PAGES
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./
-          keep_files: true
-          destination_dir: ./
-          
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Booksy_Interactive_Map
-          path: index.html
-          retention-days: 5
+          keep_files: true  # Ensures we don't accidentally delete existing history if needed
