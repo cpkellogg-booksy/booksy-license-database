@@ -1,0 +1,38 @@
+name: Fix Layout (Use Existing Data)
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix_layout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - run: pip install pandas keplergl requests
+
+      # 1. DOWNLOAD DATA FROM YOUR LIVE SITE
+      # We fetch the CSVs that were uploaded yesterday so we don't have to query the DB.
+      - name: Fetch Existing Data
+        run: |
+          wget https://cpkellogg-booksy.github.io/booksy-license-database/Booksy_FL_Licenses.csv || echo "FL Data not found on live site"
+          wget https://cpkellogg-booksy.github.io/booksy-license-database/Booksy_TX_Licenses.csv || echo "TX Data not found on live site"
+          ls -lh *.csv
+
+      # 2. GENERATE MAP (Using the new 'Clean Slate' script)
+      - name: Regenerate Map
+        run: python generate_map.py
+          
+      # 3. DEPLOY FIX IMMEDIATELY
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./
+          keep_files: true
+          destination_dir: ./
