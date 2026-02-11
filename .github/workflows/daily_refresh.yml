@@ -2,8 +2,8 @@ name: Daily Data Refresh
 
 on:
   schedule:
-    - cron: '0 8 * * *'
-  workflow_dispatch:
+    - cron: '0 8 * * *'  # Runs automatically at 8:00 AM UTC
+  workflow_dispatch:     # Allows you to click "Run workflow" manually
 
 permissions:
   contents: write
@@ -13,19 +13,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. CHECKOUT CODE
       - name: Checkout Repository
         uses: actions/checkout@v3
 
+      # 2. SETUP PYTHON
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
+      # 3. INSTALL LIBRARIES
       - name: Install Dependencies
         run: pip install pandas keplergl requests psycopg2-binary sqlalchemy sqlalchemy-cockroachdb certifi usaddress
 
-      # 1. RUN ETL (Fetch Fresh Data)
-      # Fix: We map secrets.DATABASE_URL to 'DB_CONNECTION_STRING' because that is what your python script asks for.
+      # 4. RUN ETL PIPELINES (Fetch Fresh Data)
       - name: Run Florida ETL
         env:
           DB_CONNECTION_STRING: ${{ secrets.DATABASE_URL }}
@@ -36,8 +38,7 @@ jobs:
           DB_CONNECTION_STRING: ${{ secrets.DATABASE_URL }}
         run: python etl_tx.py || echo "Warning TX script encountered an issue"
 
-      # 2. GENERATE MAP FILES
-      # Fix: This step FAILED in your logs because it was missing the secrets. We added them here.
+      # 5. GENERATE MAP FILES (Database -> CSV -> HTML)
       - name: Generate Map Files
         env:
           DB_CONNECTION_STRING: ${{ secrets.DATABASE_URL }}
@@ -47,7 +48,7 @@ jobs:
           python map_gen_tx.py
           python generate_map.py
 
-      # 3. STAGE & DEPLOY
+      # 6. PREPARE & DEPLOY TO GITHUB PAGES
       - name: Prepare Public Directory
         run: |
           mkdir public
