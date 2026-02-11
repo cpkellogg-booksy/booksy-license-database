@@ -1,45 +1,60 @@
 name: Daily Data Refresh
+
 on:
   schedule:
     - cron: '0 8 * * *'
   workflow_dispatch:
+
 permissions:
   contents: write
+
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v3
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+
       - name: Install Dependencies
-        run: pip install pandas keplergl requests psycopg2-binary
-      - name: Run Florida ETL
+        run: pip install pandas keplergl requests psycopg2-binary sqlalchemy sqlalchemy-cockroachdb certifi usaddress
+
+      # 1. FETCH DATA (Update Database)
+      - name: Run ETL Pipelines
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_CONNECTION_STRING: ${{ secrets.DATABASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python etl_fl.py || echo "Warning FL script encountered an issue"
-      - name: Run Texas ETL
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python etl_tx.py || echo "Warning TX script encountered an issue"
+        run: |
+          python etl_fl.py || echo "⚠️ FL ETL Warning"
+          python etl_tx.py || echo "⚠️ TX ETL Warning"
+
+      # 2. BUILD MAP (Database -> CSV -> HTML)
       - name: Generate Map Files
-        run: python generate_map.py
-      - name: Upload Site Assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: Booksy_Site_Assets
-          path: |
-            index.html
-            kepler_map.html
-          retention-days: 5
+        env:
+          DB_CONNECTION_STRING: ${{ secrets.DATABASE_URL }}
+          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
+        run: |
+          python map_gen_fl.py
+          python map_gen_tx.py
+          python generate_map.py
+
+      # 3. PREPARE DEPLOY (Clean Folder)
+      - name: Stage Files
+        run: |
+          mkdir public
+          cp index.html public/
+          cp kepler_map.html public/
+          cp *.csv public/
+
+      # 4. PUBLISH
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./
-          keep_files: true
+          publish_dir: ./public
+          force_orphan: true # Ensures a clean history for the site branch
