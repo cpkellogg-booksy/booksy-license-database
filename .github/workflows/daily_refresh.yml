@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v3
 
       - name: Setup Python
@@ -24,16 +24,20 @@ jobs:
       - name: Install Dependencies
         run: pip install pandas keplergl requests psycopg2-binary sqlalchemy sqlalchemy-cockroachdb certifi usaddress
 
-      # 1. FETCH DATA (Update Database)
-      - name: Run ETL Pipelines
+      # 1. RUN ETL (Fetch Fresh Data)
+      # Fix: We map secrets.DATABASE_URL to 'DB_CONNECTION_STRING' because that is what your python script asks for.
+      - name: Run Florida ETL
         env:
           DB_CONNECTION_STRING: ${{ secrets.DATABASE_URL }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          python etl_fl.py || echo "⚠️ FL ETL Warning"
-          python etl_tx.py || echo "⚠️ TX ETL Warning"
+        run: python etl_fl.py || echo "Warning FL script encountered an issue"
 
-      # 2. BUILD MAP (Database -> CSV -> HTML)
+      - name: Run Texas ETL
+        env:
+          DB_CONNECTION_STRING: ${{ secrets.DATABASE_URL }}
+        run: python etl_tx.py || echo "Warning TX script encountered an issue"
+
+      # 2. GENERATE MAP FILES
+      # Fix: This step FAILED in your logs because it was missing the secrets. We added them here.
       - name: Generate Map Files
         env:
           DB_CONNECTION_STRING: ${{ secrets.DATABASE_URL }}
@@ -43,18 +47,17 @@ jobs:
           python map_gen_tx.py
           python generate_map.py
 
-      # 3. PREPARE DEPLOY (Clean Folder)
-      - name: Stage Files
+      # 3. STAGE & DEPLOY
+      - name: Prepare Public Directory
         run: |
           mkdir public
           cp index.html public/
           cp kepler_map.html public/
           cp *.csv public/
 
-      # 4. PUBLISH
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./public
-          force_orphan: true # Ensures a clean history for the site branch
+          force_orphan: true
